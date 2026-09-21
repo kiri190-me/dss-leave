@@ -1,8 +1,12 @@
 import type { ReactNode } from "react";
 
+import { ServiceMenuBar } from "@dss/ui";
+
 import { AppHeader } from "@/components/AppHeader";
 import { requireViewer } from "@/lib/auth/guards";
 import { devLoginEnabled } from "@/lib/auth/dev-login";
+import { readServiceMenu } from "@/lib/auth/service-menu-cookie";
+import { env } from "@/lib/env";
 import { pendingCountFor } from "@/lib/leave/data";
 
 /**
@@ -14,6 +18,20 @@ export default async function InternalLayout({ children }: { children: ReactNode
   const viewer = await requireViewer();
   const pendingCount = await pendingCountFor(viewer);
 
+  // 머리말 **안**에 앉는 서비스 오가기 목록. 포털이 로그인 ID 토큰에 실어 보낸
+  // 것을 통합 로그인 콜백이 별도 서명 쿠키에 구워 두었다
+  // (auth/service-menu-cookie.ts).
+  //
+  // 🔴 쿠키가 없거나 못 믿을 것이면 빈 배열이고, 그때 ServiceMenuBar 는
+  // 아무것도 그리지 않는다 — 빈 자리도 남기지 않으므로 머리말이 예전과 같다.
+  // 포털이 이 시스템에 그 클레임을 싣기 전까지는 늘 이 상태다.
+  const services = await readServiceMenu();
+  // 「지금 여기」로 눌러 그릴 칸을 고르는 열쇠 — 이 시스템의 client_id(= ID
+  // 토큰의 aud)다. 🔴 이름이 아니라 식별자로 견준다(이름은 사람이 바꾼다).
+  // 목록이 있을 때만 읽는다: 목록이 있다는 것은 통합 로그인이 설정돼 있다는
+  // 뜻이라(설정이 없으면 서명 키가 없어 쿠키를 풀지 못한다) env 가 던지지 않는다.
+  const currentServiceId = services.length > 0 ? env.ssoClientId : null;
+
   return (
     <div className="flex min-h-full flex-col">
       {devLoginEnabled() && (
@@ -22,7 +40,35 @@ export default async function InternalLayout({ children }: { children: ReactNode
           개발용 임시 로그인이 켜져 있습니다
         </div>
       )}
-      <AppHeader viewer={viewer} pendingCount={pendingCount} />
+      <AppHeader
+        viewer={viewer}
+        pendingCount={pendingCount}
+        serviceMenu={
+          /*
+            🔴 머리말 **위**가 아니라 **안**에 앉힌다(variant="inline") —
+            위에 띠를 따로 두면 화면 맨 위가 두 층이 되고 본문이 한 줄만큼
+            줄어든다(A/S·개선요청이 먼저 같은 결정을 했다). 모습은 드롭다운
+            단추 하나라 서비스가 몇이든 머리말이 잡아먹는 폭이 그대로다.
+
+            🔴 노치 인셋을 여기서 켜지 않는다. 머리말 **안**으로 들였으므로
+            화면 맨 위 요소는 다시 머리말이고, inline 모습은 그 패딩을 0 으로
+            못 박아 둔다. 둘 다 두면 아이폰에서 노치 높이만큼 두 번 밀린다.
+
+            🔴 colorScheme 도 넘기지 않는다. 이 사이트는 globals.css 에서
+            color-scheme: light 로 고정이고, 기본값 "host" 는 조상에 .dark 가
+            있을 때만 어두워지므로 그대로 두는 것이 옳다.
+
+            🔴 이 파일에 "use client" 를 붙이지 않는다. 딸려 오는 클라이언트
+            조각(바깥 눌러 접기·Esc)은 그 묶음 안에 있고 prop 을 하나도 받지
+            않아, 서버에서 그려도 그대로 된다.
+          */
+          <ServiceMenuBar
+            services={services}
+            currentServiceId={currentServiceId}
+            variant="inline"
+          />
+        }
+      />
       <main className="mx-auto w-full max-w-[1280px] flex-1 px-4 py-6">{children}</main>
     </div>
   );

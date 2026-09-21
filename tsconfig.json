@@ -19,7 +19,12 @@
       }
     ],
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      // 사내 시스템들이 함께 쓰는 화면 조각(별도 저장소 dss-ui 를 git submodule 로
+      // vendor/ 에 끌어온 것). 저장소 폴더 안의 소스라 Next 가 제 앱 코드처럼
+      // 컴파일한다 — transpilePackages 도 Tailwind @source 도 필요 없다.
+      "@dss/ui": ["./vendor/dss-ui/src/index.ts"],
+      "@dss/ui/styles.css": ["./vendor/dss-ui/src/service-menu/service-menu.css"]
     }
   },
   "include": [

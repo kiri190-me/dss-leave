@@ -231,6 +231,15 @@ export type SsoIdentity = {
    * 무엇인지 정하는 곳은 sso-role.ts 의 decideRole 한 곳뿐이다.
    */
   role: unknown;
+  /**
+   * 「이 사람이 들어갈 수 있는 사내 시스템 목록」(포털의 `dss_services` 클레임).
+   * 머리말 안 서비스 메뉴바를 그리는 데만 쓰고 **인가 판정에는 쓰지 않는다.**
+   *
+   * role 과 같은 이유로 unknown 이다 — 포털이 이 시스템에 그 값을 아직 안 실어
+   * 줄 수 있고, 모양을 보고 거르는 곳은 service-menu-cookie.ts 한 곳뿐이다
+   * (거기서 @dss/ui 의 normalizeServiceMenu 로 그릴 수 없는 칸을 버린다).
+   */
+  services: unknown;
 };
 
 export async function verifyIdToken(
@@ -262,6 +271,7 @@ export async function verifyIdToken(
       name: typeof payload.name === "string" ? payload.name : null,
       email: typeof payload.email === "string" ? payload.email : null,
       role: payload.role,
+      services: payload.dss_services,
     };
   } catch (error) {
     console.error("[sso] id_token 검증 실패:", error);

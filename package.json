@@ -13,8 +13,10 @@
     "db:psql": "docker exec -it dss-leave-postgres-dev psql -U dss_leave -d dss_leave",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
+    "seed:ranks": "tsx scripts/seed-ranks.ts",
     "seed:dev": "tsx scripts/seed-dev.ts",
     "test:auth": "tsx scripts/test-auth.ts",
+    "test:menu": "tsx scripts/test-service-menu.ts",
     "test:leave": "tsx scripts/test-leave-rules.ts",
     "test:workflow": "tsx scripts/test-workflow.ts"
   },

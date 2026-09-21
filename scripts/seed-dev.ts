@@ -24,6 +24,7 @@ async function main() {
   // .env.local 을 읽은 뒤에 불러와야 DB 주소가 잡힌다
   const { db } = await import("../src/lib/db");
   const s = await import("../src/lib/db/schema");
+  const { ensureRanks } = await import("../src/lib/db/base-data");
   const { fakeSubFor } = await import("../src/lib/auth/dev-login");
   const { LEAVE_TYPE_INFO, computeLeaveDays } = await import("../src/lib/leave/rules");
 
@@ -80,17 +81,12 @@ async function main() {
   const holidaySet = new Set(HOLIDAYS.map(([d]) => d));
 
   await db.transaction(async (tx) => {
-    // 직급 — 실장은 결재선에서 빠지고 휴가 관리 대상도 아니라 넣지 않는다
-    const ranks = await tx
-      .insert(s.webRanks)
-      .values([
-        { name: "사원", sortOrder: 10, canApprove: false },
-        { name: "대리", sortOrder: 20, canApprove: false },
-        { name: "과장", sortOrder: 30, canApprove: true },
-        { name: "부장", sortOrder: 50, canApprove: true },
-        { name: "대표", sortOrder: 90, canApprove: true },
-      ])
-      .returning();
+    // 직급은 **가짜 자료가 아니다** — 기본 자료라 src/lib/db/base-data.ts 가 갖고
+    // 있고 npm run seed:ranks 로 따로 넣을 수 있다. 여기서 같은 것을 부르는
+    // 이유: 직급을 먼저 넣어 둔 DB 에 이 스크립트를 돌려도 이름 유일 색인에
+    // 걸려 터지지 않아야 한다(없는 것만 넣는다).
+    // 실장은 결재선에서 빠지고 휴가 관리 대상도 아니라 그 목록에 없다.
+    const { ranks } = await ensureRanks(tx);
     const rank = (name: string) => ranks.find((r) => r.name === name)!;
 
     // 근속 표 — 1~2년차 10일, 3~4년차 11일은 인터뷰 예시. 나머지는 화면을 보기 위한 임시값

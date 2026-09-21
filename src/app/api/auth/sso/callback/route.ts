@@ -18,6 +18,7 @@ import {
   SSO_TX_COOKIE_PATH,
   verifyIdToken,
 } from "@/lib/auth/oidc";
+import { writeServiceMenuCookie } from "@/lib/auth/service-menu-cookie";
 import { createSession } from "@/lib/auth/session";
 import { resolveSsoLogin } from "@/lib/auth/sso-login";
 import { env } from "@/lib/env";
@@ -98,6 +99,15 @@ export async function GET(request: Request) {
 
   // 임시 로그인과 만나는 자리. 여기서부터는 두 길이 구별되지 않는다.
   await createSession(result.user.id);
+
+  // 머리말 안 서비스 메뉴바가 그릴 목록. 🔴 **세션을 준 뒤**에 굽는다 —
+  // 로그인 자체가 실패하면 목록도 남을 이유가 없다.
+  //
+  // 🔴 클레임이 없으면(= 포털이 이 시스템에 아직 안 실어 주면) 굽지 않고
+  // **남아 있던 것을 지운다.** 그때 머리말은 메뉴바가 붙기 전과 똑같다.
+  // 이 한 줄이 임시 로그인 쪽에는 없는 이유: 그 길에는 포털이 없어 목록을
+  // 얻을 데가 없다(로그인 시작·로그아웃에서 지우는 것으로 충분하다).
+  await writeServiceMenuCookie(identity.services);
 
   await writeAudit({
     actor: result.user,
