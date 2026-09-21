@@ -30,7 +30,9 @@ import {
 import { decideRole, isValidSubject } from "../src/lib/auth/sso-role";
 import {
   beginLogin,
+  endSessionUrl,
   openTransaction,
+  portalAppsUrl,
   readLogoutClaims,
   sealTransaction,
 } from "../src/lib/auth/oidc";
@@ -357,6 +359,37 @@ check("🔴 쿠키 이름이 다른 시스템과 겹치지 않는다 — 쿠키�
   assert.equal(new Set(names).size, names.length);
   // 포털의 쿠키
   assert.ok(!names.includes("dss_sso"));
+});
+
+/* ------------------------------------------------------------------ */
+/* 7. 포털로 가는 두 길 — 「통합 로그인으로」와 「로그아웃」              */
+/*                                                                     */
+/* 머리말에 나란히 선 단추 둘이 각각 부르는 함수다. 생김새가 닮아 섞기  */
+/* 쉬운데, 섞이면 「잠깐 포털 좀 보고 오겠다」가 로그아웃이 된다.        */
+/* ------------------------------------------------------------------ */
+
+check("「통합 로그인으로」는 포털의 앱 런처(/apps)로 간다", () => {
+  const url = new URL(portalAppsUrl());
+  assert.equal(url.pathname, "/apps");
+  assert.equal(url.host, "192.168.1.10:3100");
+  // 사람이 보는 화면이라 OIDC 왕복이 아니다 — 붙일 질의 문자열이 없다.
+  assert.equal(url.search, "");
+});
+
+check("🔴 「통합 로그인으로」와 「로그아웃」은 서로 다른 곳으로 간다", () => {
+  // 이 한 줄이 이 절의 전부다. 같아지는 순간 세션을 끊지 않기로 한 단추가
+  // 세션을 끊는다 — 화면에서는 「포털로 갔을 뿐인데 다시 로그인하라고 한다」
+  // 로 보이고, 원인을 머리말에서 찾게 된다.
+  assert.notEqual(portalAppsUrl(), endSessionUrl());
+  assert.ok(!portalAppsUrl().includes("logout"));
+  assert.ok(endSessionUrl().endsWith("/api/oidc/logout"));
+});
+
+check("SSO_ISSUER 끝의 슬래시가 //apps 를 만들지 않는다", () => {
+  // 이 검사 파일은 맨 위에서 일부러 끝에 슬래시를 붙인 값을 넣어 둔다.
+  // env.ssoIssuer 가 그것을 떼므로 여기서 한 번 더 붙지 않아야 한다.
+  assert.ok(!portalAppsUrl().includes("//apps"));
+  assert.equal(portalAppsUrl(), "http://192.168.1.10:3100/apps");
 });
 
 console.log(`\n${passed}개 통과`);

@@ -5,6 +5,7 @@ import { ServiceMenuBar } from "@dss/ui";
 import { AppHeader } from "@/components/AppHeader";
 import { requireViewer } from "@/lib/auth/guards";
 import { devLoginEnabled } from "@/lib/auth/dev-login";
+import { portalAppsUrl } from "@/lib/auth/oidc";
 import { readServiceMenu } from "@/lib/auth/service-menu-cookie";
 import { env } from "@/lib/env";
 import { pendingCountFor } from "@/lib/leave/data";
@@ -32,6 +33,25 @@ export default async function InternalLayout({ children }: { children: ReactNode
   // 뜻이라(설정이 없으면 서명 키가 없어 쿠키를 풀지 못한다) env 가 던지지 않는다.
   const currentServiceId = services.length > 0 ? env.ssoClientId : null;
 
+  // 머리말의 「통합 로그인으로」가 갈 곳 — 포털의 앱 런처다.
+  //
+  // 🔴 메뉴바와 다른 것이다. 메뉴바는 **다른 시스템**으로 건너뛰는 길이고,
+  // 이것은 **포털 자신**으로 돌아가는 길이다. 포털은 자기 자신을 서비스 목록에
+  // 넣지 않으므로(포털의 `clients` 표에 포털이 없다) 메뉴바 어디에도 포털로
+  // 가는 칸이 없다 — 이 한 줄이 없으면 포털로 돌아갈 방법이 아예 없다.
+  //
+  // 🔴 로그아웃과도 다르다. 세션을 끊지 않으므로 갔다가 돌아오면 그대로
+  // 들어와 있다(oidc.ts 의 endSessionUrl 과 portalAppsUrl 비교).
+  //
+  // 🔴 설정이 없으면 **null 이다 — 단추를 아예 그리지 않는다.** 두 가지
+  // 이유다. 첫째, portalAppsUrl() 은 env.ssoIssuer 를 읽는데 그 getter 는
+  // 설정이 없으면 던진다. 감싸지 않고 부르면 머리말이 아니라 이 화면 전체가
+  // 500 이 된다. 둘째, 설정이 없다는 것은 포털이 어디 있는지 모른다는 뜻이라
+  // 그릴 수 있는 주소 자체가 없다. **눌러서 아무 데도 못 가는 단추보다 없는
+  // 편이 낫다** — 임시 로그인으로 들어온 사람에게는 포털이 처음부터 남의
+  // 이야기고, 나가는 길은 옆의 「로그아웃」이 이미 맡고 있다.
+  const portalUrl = env.ssoConfigured ? portalAppsUrl() : null;
+
   return (
     <div className="flex min-h-full flex-col">
       {devLoginEnabled() && (
@@ -43,6 +63,7 @@ export default async function InternalLayout({ children }: { children: ReactNode
       <AppHeader
         viewer={viewer}
         pendingCount={pendingCount}
+        portalUrl={portalUrl}
         serviceMenu={
           /*
             🔴 머리말 **위**가 아니라 **안**에 앉힌다(variant="inline") —

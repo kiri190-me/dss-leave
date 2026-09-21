@@ -354,3 +354,33 @@ export async function verifyLogoutToken(token: string): Promise<string | null> {
 export function endSessionUrl(): string {
   return `${env.ssoIssuer}/api/oidc/logout`;
 }
+
+/* ------------------------------------------------------------------ */
+/* 포털 앱 런처로 가기 — 로그아웃이 **아니다**                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 포털의 앱 런처(`/apps`) — 이 사람이 쓸 수 있는 다른 사내 시스템이 타일로
+ * 놓인 화면.
+ *
+ * 🔴 바로 위의 `endSessionUrl()` 과 헷갈리면 안 된다. 생김새가 닮았지만 하는
+ * 일이 정반대다:
+ *
+ *   endSessionUrl()   /api/oidc/logout   포털 세션까지 **끊는다**
+ *   portalAppsUrl()   /apps              세션을 **그대로 두고** 화면만 옮긴다
+ *
+ * 그래서 여기로 갔다가 돌아오면 다시 로그인하지 않는다. 프로토콜 주소가 아니라
+ * 사람이 보는 화면이라 OIDC 왕복도 없다 — 평범한 링크 한 줄이면 된다.
+ *
+ * 이 함수가 화면이 아니라 이 파일에 있는 이유는 파일 머리말과 같다: 포털의
+ * 주소를 아는 곳은 여기 한 곳뿐이어야 한다. 화면에서 `env.ssoIssuer` 를 직접
+ * 읽어 붙이기 시작하면 포털이 옮겨 갈 때 고칠 곳이 흩어진다.
+ *
+ * 🔴 부르기 전에 `env.ssoConfigured` 를 본다. `env.ssoIssuer` 는 설정이 없으면
+ * **던지므로**, 등록 전 PC 에서 그냥 부르면 머리말이 아니라 화면 전체가 죽는다.
+ * (개선요청 dss-improvements 의 같은 이름 함수와 한 글자도 다르지 않다 —
+ *  한쪽을 고치면 다른 쪽도 함께 봐야 한다.)
+ */
+export function portalAppsUrl(): string {
+  return `${env.ssoIssuer}/apps`;
+}
