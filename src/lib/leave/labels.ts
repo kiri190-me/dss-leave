@@ -2,6 +2,7 @@
  * 화면에 보일 글자와 색. Tailwind 가 클래스를 찾을 수 있게 전부 글자 그대로 적는다.
  */
 import type { LeaveType, RequestKind, RequestStatus } from "@/lib/db/schema";
+import { approvalProgress, type StepSlot } from "./rules";
 
 export { LEAVE_TYPE_INFO } from "./rules";
 
@@ -57,6 +58,31 @@ export const KIND_LABEL: Record<RequestKind, string> = {
  */
 export function stepLabel(step: { approverName: string | null; rankName: string }): string {
   return step.approverName ?? step.rankName;
+}
+
+/** 결재 단계 상태에 붙일 한 마디. 순차라 「지금 차례」와 「차례 기다림」이 갈린다 */
+export const STEP_STATUS_SUFFIX: Record<string, string> = {
+  APPROVED: " ✓",
+  REJECTED: " ✕",
+  PENDING: " 지금 차례",
+  WAITING: " 차례 기다림",
+  SKIPPED: " 건너뜀",
+};
+
+/**
+ * 「2/3 단계 · 지금 최동욱 차례」 — 결재가 어디까지 왔는지 한 줄로.
+ * 결재가 끝났거나 단계가 없으면 `null`(붙일 말이 없다).
+ *
+ * 🔴 차례를 고르는 셈은 `rules.ts` 의 `approvalProgress` 한 곳에 있다 —
+ * workflow.ts 가 다음 사람을 깨울 때 쓰는 함수와 **같은 것**이라야 화면이
+ * 「지금 ○○○ 차례」라고 적어 놓고 실제로는 다른 사람을 기다리는 일이 없다.
+ */
+export function approvalTurnLabel(
+  steps: readonly (StepSlot & { approverName: string | null; rankName: string })[],
+): string | null {
+  const { total, position, current } = approvalProgress(steps);
+  if (!current || total === 0) return null;
+  return `${position}/${total} 단계 · 지금 ${stepLabel(current)} 차례`;
 }
 
 /** 1 → "1일", 0.5 → "0.5일", 2.5 → "2.5일" */

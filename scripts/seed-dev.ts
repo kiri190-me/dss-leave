@@ -10,7 +10,11 @@ import { sql } from "drizzle-orm";
 
 process.loadEnvFile(".env.local");
 
-/** 결재는 순서가 없다. approved = 이미 승인한 결재권자 직급 */
+/**
+ * 결재는 **한 명씩 차례로** 간다 (2026-09-21). approved = 이미 승인한 결재권자 직급.
+ * 아직 결재가 남은 신청은 **맨 앞 한 명만 PENDING**, 그 뒤는 WAITING 으로 넣는다 —
+ * 가짜 데이터가 실제 흐름과 다르면 화면이 「지금 ○○○ 차례」를 거짓으로 적는다.
+ */
 type Outcome =
   | { status: "APPROVED" }
   | { status: "PENDING"; approved: string[] }
@@ -183,6 +187,8 @@ async function main() {
         .returning();
 
       if (chain.length === 0) return;
+      // 한 명씩 차례로: 아직 결재가 남은 단계 중 **맨 앞 하나만** 지금 차례(PENDING)
+      let openTaken = false;
       await tx.insert(s.webApprovalSteps).values(
         chain.map((approver, i) => {
           const stepNo = i + 1;
@@ -194,7 +200,10 @@ async function main() {
           else if ((outcome.approved ?? []).includes(rankName)) stepStatus = "APPROVED";
           else if (outcome.status === "REJECTED")
             stepStatus = outcome.by === rankName ? "REJECTED" : "SKIPPED";
-          else stepStatus = "PENDING";
+          else if (!openTaken) {
+            stepStatus = "PENDING"; // 지금 차례
+            openTaken = true;
+          } else stepStatus = "WAITING"; // 앞사람을 기다린다
           const decided = stepStatus === "APPROVED" || stepStatus === "REJECTED";
           return {
             requestId: req.id,

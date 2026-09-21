@@ -18,14 +18,20 @@ import { approversAfter, liveApprovers, type RouteMember } from "@/lib/leave/rul
  *   최대표(맨 끝)가 신청하면 → 결재자가 없다 = 바로 확정
  *   결재선에 없는 사람이 신청하면 → 목록 전원
  *
- * 순서는 **누가 결재자가 되는가**를 가르는 것이지 「한 명씩 차례로」가 아니다.
- * 결재는 지금도 동시에 가고 순서 없이 모두 승인하면 확정된다.
+ * 🔴 그리고 결재는 **한 명씩 차례로** 간다 (2026-09-21 두 번째 결정, 그전에는
+ * 동시에 갔다). 앞사람이 처리해야 다음 사람의 결재함에 들어간다. 그래서 이
+ * 목록의 차례는 「누가 결재자가 되는가」와 「누구부터 결재하는가」를 **둘 다**
+ * 정한다.
  *
  * ── 🔴 화면이 거짓말하지 않는다 ────────────────────────────────────────
  * 예전 화면은 「결재권자: 과장 · 부장」이라 적어 놓고 그 직급에 사람이 없으면
  * 실제로는 결재 없이 바로 등록했다. 같은 정직함을 사람 기반에서도 지킨다:
  * 퇴사한 사람의 줄을 조용히 지우지 않고 그 자리에 「건너뜁니다」라고 적는다.
  * 직급에 결재권이 없어 결재함 메뉴가 안 보이는 사람도 그 자리에 적는다.
+ *
+ * 🔴 아래 「누가 신청하면 누가 결재하나」 표는 **실제 셈과 같은 함수**
+ * (`approversAfter`·`liveApprovers`)를 부른다. 표를 따로 셈하면 화면과 실제가
+ * 갈리고, 그 순간 이 화면은 거짓말이 된다.
  */
 export function ApprovalRouteCard({
   route,
@@ -43,25 +49,50 @@ export function ApprovalRouteCard({
   return (
     <section className="rounded-lg border border-slate-200 bg-white p-4">
       <h2 className="text-sm font-semibold text-slate-800">승인 절차 (결재선)</h2>
-      <p className="mt-0.5 text-xs text-slate-500">
-        결재할 <b>사람</b>을 차례대로 적어 둡니다. 신청자가 이 목록 안에 있으면 <b>자기 뒤에 있는 사람들</b>에게만
-        결재를 받고, 목록에 없으면 <b>전원</b>에게 받습니다. 맨 끝 사람의 신청은 결재 없이 바로 등록됩니다. 차례는
-        누가 결재자가 되는지를 가를 뿐이고, 결재 자체는 지금처럼 <b>동시에</b> 가서 모두 승인하면 확정됩니다.
-      </p>
 
+      {/* 🔴 「지금 무슨 일이 일어나는가」를 맨 위에 크게. 설명보다 먼저 읽혀야 한다 */}
       {route.length === 0 ? (
-        <p className="mt-3 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800">
+        <p className="mt-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm font-medium text-amber-900">
           결재선이 비어 있습니다. 지금은 <b>모든 신청이 결재 없이 바로 등록</b>됩니다. 결재를 받으려면 아래에서
           사람을 넣으세요.
         </p>
       ) : (
         live.length === 0 && (
-          <p className="mt-3 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800">
+          <p className="mt-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm font-medium text-amber-900">
             결재선에 사람은 있지만 <b>재직 중인 사람이 한 명도 없습니다.</b> 지금 들어오는 신청은 결재 없이 바로
             등록됩니다.
           </p>
         )
       )}
+
+      <p className="mt-2 text-xs text-slate-600">
+        결재할 <b>사람</b>을 차례대로 적어 두는 목록 하나입니다. 신청자의 직급과 상관없이 모든 신청이 이 목록을
+        따라갑니다.
+      </p>
+      <ul className="mt-2 list-disc space-y-1 pl-4 text-xs text-slate-500">
+        <li>
+          <b>한 명씩 차례로</b> 결재합니다. 위에 있는 사람부터 시작해, <b>앞사람이 처리해야</b> 다음 사람의
+          결재함에 들어갑니다. 여러 사람에게 동시에 가지 않습니다.
+        </li>
+        <li>
+          신청자가 이 목록 <b>안에 있으면 자기 뒤에 있는 사람들</b>에게만 받습니다. <b>맨 끝 사람</b>이 신청하면
+          뒤가 없으므로 <b>결재 없이 바로 확정</b>됩니다.
+        </li>
+        <li>
+          목록에 <b>없는 사람</b>이 신청하면 <b>전원</b>에게 차례로 받습니다.
+        </li>
+        <li>
+          누구든 <b>반려하면 거기서 끊깁니다.</b> 뒷사람에게는 가지 않고, 다시 받으려면 <b>새로 신청</b>해야
+          합니다.
+        </li>
+        <li>
+          <b>퇴사한 사람</b>은 새 신청에서 건너뜁니다. 이미 그 사람 차례에서 멈춘 신청은 직원 관리 화면의{" "}
+          <b>[건너뛰기]</b>로 풉니다 — 차례로 가기 때문에 앞사람이 막히면 뒷사람은 시작도 못 합니다.
+        </li>
+        <li>
+          <b>결재선을 비워 두면</b> 모든 신청이 결재 없이 바로 등록됩니다. 승인 절차를 끄는 방법입니다.
+        </li>
+      </ul>
 
       {route.length > 0 && (
         <ul className="mt-4 flex flex-col gap-2">
@@ -155,6 +186,14 @@ export function ApprovalRouteCard({
               다른 설정까지 못 쓰게 된다(폰 폭에서 실제로 일어난다). */}
           <div className="mt-2 overflow-x-auto">
             <table className="w-full min-w-[420px] text-xs">
+              {/* 🔴 순차인데 이름만 늘어놓으면 동시에 가는 줄 안다 — 칸 이름과
+                  번호·화살표로 「이 차례로 한 명씩」임을 표에서도 드러낸다 */}
+              <thead>
+                <tr className="text-left text-slate-400">
+                  <th className="whitespace-nowrap pb-1 pr-3 font-medium">신청자</th>
+                  <th className="pb-1 font-medium">결재 차례 (이 순서로 한 명씩)</th>
+                </tr>
+              </thead>
               <tbody className="divide-y divide-slate-100">
                 {[...route, null].map((applicant) => {
                   const chain = liveApprovers(
@@ -169,7 +208,14 @@ export function ApprovalRouteCard({
                         {chain.length === 0 ? (
                           <span className="text-slate-500">결재 없이 바로 등록</span>
                         ) : (
-                          chain.map((a) => a.name).join(" · ")
+                          chain.map((a, i) => (
+                            <span key={a.employeeId}>
+                              {i > 0 && <span className="px-1 text-slate-300">→</span>}
+                              <span className={i === 0 ? "font-medium" : undefined}>
+                                {i + 1}. {a.name}
+                              </span>
+                            </span>
+                          ))
                         )}
                       </td>
                     </tr>
@@ -179,8 +225,8 @@ export function ApprovalRouteCard({
             </table>
           </div>
           <p className="mt-2 text-[11px] text-slate-400">
-            퇴사자는 위 표에서 이미 빠져 있습니다. 결재자가 한 명도 없는 줄은 그 사람의 신청이 결재 없이 바로
-            등록된다는 뜻입니다.
+            <b>1번</b>부터 시작해 앞사람이 승인해야 다음 사람에게 넘어갑니다. 퇴사자는 위 표에서 이미 빠져
+            있습니다. 결재자가 한 명도 없는 줄은 그 사람의 신청이 결재 없이 바로 등록된다는 뜻입니다.
           </p>
         </div>
       )}

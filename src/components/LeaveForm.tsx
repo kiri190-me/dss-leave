@@ -160,7 +160,9 @@ export function LeaveForm({
               "결재 없이 바로 등록됩니다."
             ) : (
               <>
-                결재권자: <strong>{chainNames.join(" · ")}</strong> — 순서 없이 모두 승인하면 확정됩니다
+                결재는 <strong>{chainNames.join(" → ")}</strong> 차례로 갑니다 — 먼저{" "}
+                <strong>{chainNames[0]}</strong> 님에게 가고, 앞사람이 승인해야 다음 사람에게
+                넘어갑니다. {chainNames.length}명이 모두 승인하면 확정됩니다.
               </>
             )}
           </p>

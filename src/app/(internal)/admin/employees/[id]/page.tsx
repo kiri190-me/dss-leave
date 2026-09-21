@@ -409,8 +409,9 @@ export default async function EmployeeDetailPage({
                 {r.status === "PENDING" && r.steps.some((s) => s.status === "PENDING") && (
                   <div className="basis-full pt-1">
                     <p className="text-[11px] text-slate-500">
-                      결재 대기 중입니다. 결재자가 퇴사했거나 오래 자리를 비워 막혔다면 그 단계를 건너뛸 수
-                      있습니다 (승인이 아니라 건너뜀으로 기록됩니다).
+                      아래 사람의 차례에서 멈춰 있습니다. 결재는 <b>한 명씩 차례로</b> 가기 때문에 이 사람이
+                      막히면 뒷사람은 시작조차 못 합니다 — 퇴사했거나 오래 자리를 비웠다면 그 단계를 건너뛰세요.
+                      건너뛰면 그 자리에서 다음 사람이 깨어납니다 (승인이 아니라 건너뜀으로 기록됩니다).
                     </p>
                     <div className="mt-1 flex flex-col gap-1">
                       {r.steps

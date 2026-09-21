@@ -14,7 +14,7 @@
  * - 휴가는 먼저 사라질 일수부터 차감한다.
  * - 여러 날 휴가는 주말·공휴일·회사 휴무일을 빼고 센다.
  */
-import type { LeaveType } from "@/lib/db/schema";
+import type { LeaveType, StepStatus } from "@/lib/db/schema";
 import {
   addDays,
   addMonths,
@@ -578,4 +578,70 @@ export function approversAfter(
  */
 export function liveApprovers(chain: readonly RouteMember[]): RouteMember[] {
   return chain.filter((m) => m.active);
+}
+
+/* ------------------------------------------------------------------ */
+/* 결재 차례 — 「지금 누구 차례인가」                                     */
+/* 🔴 2026-09-21: 한 명씩 차례로 (사용자 결정, A/S 견적서 결재에서 따옴)   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 아직 **열려 있는** 단계 — 앞사람을 기다리거나(WAITING) 지금 차례(PENDING).
+ * 🔴 확정 조건은 「PENDING 이 없다」가 아니라 **이 둘이 모두 없다**이다.
+ * 순차로 바뀌면서 대부분의 단계가 WAITING 으로 잠들어 있으므로, PENDING 만
+ * 세면 첫 승인에서 곧바로 확정되어 버린다.
+ */
+export function isOpenStep(step: { status: StepStatus }): boolean {
+  return step.status === "PENDING" || step.status === "WAITING";
+}
+
+/** 차례를 가릴 때 필요한 최소한의 두 칸 */
+export type StepSlot = { stepNo: number; status: StepStatus };
+
+/**
+ * **다음에 결재할 단계.** 열려 있는 단계 중 차례(stepNo)가 가장 앞선 것이고,
+ * 하나도 없으면 `null` — 그때가 **확정할 때**다.
+ *
+ * (A/S 견적서의 `findNextRouteStepToApprove` 의 휴가판이다. 저쪽은 「요청자
+ * 본인의 단계는 건너뛴다」를 여기서 함께 처리하지만, 휴가는 그 몫을
+ * `approversAfter` 가 **신청하는 순간** 이미 끝내 둔다 — 단계 행에 남은 사람은
+ * 전부 실제로 결재할 사람이라 여기서 다시 거를 것이 없다.)
+ *
+ * @param steps 그 신청의 단계들. 순서가 뒤섞여 있어도 된다 — 번호가 가장 작은
+ *   것을 고르므로 부르는 쪽의 정렬에 기대지 않는다.
+ *
+ * 부르는 자리:
+ *  - 승인·건너뛰기 뒤: 돌려받은 단계가 WAITING 이면 **PENDING 으로 깨운다**.
+ *    `null` 이면 열린 단계가 없다는 뜻이라 **확정**한다.
+ *  - 화면: 지금 누구 차례인지를 이 함수로 고른다(`approvalProgress`).
+ */
+export function findNextStepToApprove<T extends StepSlot>(steps: readonly T[]): T | null {
+  let next: T | null = null;
+  for (const step of steps) {
+    if (!isOpenStep(step)) continue;
+    if (next === null || step.stepNo < next.stepNo) next = step;
+  }
+  return next;
+}
+
+export type ApprovalProgress<T> = {
+  /** 이 신청의 단계 수 (m) */
+  total: number;
+  /** 지금 몇 번째 단계인가 (n). 결재가 다 끝났으면 total 과 같다 */
+  position: number;
+  /** 지금 차례인 단계. 끝났으면 null */
+  current: T | null;
+};
+
+/** 화면의 「n/m 단계 · 지금 ○○○ 차례」를 만드는 재료 */
+export function approvalProgress<T extends StepSlot>(
+  steps: readonly T[],
+): ApprovalProgress<T> {
+  const ordered = [...steps].sort((a, b) => a.stepNo - b.stepNo);
+  const current = findNextStepToApprove(ordered);
+  return {
+    total: ordered.length,
+    position: current ? ordered.indexOf(current) + 1 : ordered.length,
+    current,
+  };
 }

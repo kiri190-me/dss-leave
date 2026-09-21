@@ -8,16 +8,20 @@ import assert from "node:assert/strict";
 import { PgDialect } from "drizzle-orm/pg-core";
 
 import { addMonths, fullMonths, calendarWeeks } from "../src/lib/dates";
+import type { StepStatus } from "../src/lib/db/schema";
 import { japanHolidays } from "../src/lib/jp-holidays";
 import { isMyStep, myStepCondition } from "../src/lib/leave/approval-scope";
+import { approvalTurnLabel } from "../src/lib/leave/labels";
 import {
   allocate,
   anniversaryIn,
   annualEntitlement,
+  approvalProgress,
   approversAfter,
   balanceOn,
   computeLeaveDays,
   expandLeaveDays,
+  findNextStepToApprove,
   leaveYearOf,
   leaveYearWindow,
   liveApprovers,
@@ -348,6 +352,89 @@ check("결재선: 직급에 결재권이 없는 사람도 결재선에 들어간
   const chain = liveApprovers(approversAfter(결재선, "e-한사원"));
   assert.equal(chain[0].name, "김대리");
   assert.equal(chain[0].rankCanApprove, false);
+});
+
+/* ------------------------------------------------------------------ */
+/* 결재 차례 — 한 명씩 차례로 (2026-09-21)                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 🔴 `findNextStepToApprove` 는 workflow.ts 가 **승인·건너뛰기 뒤에 다음
+ * 차례를 깨울 때**와 **확정할 때**를 가르는 함수다. 여기서 깨지면 신청이
+ * 영영 멈추거나(깨우지 못함) 첫 승인만으로 확정된다(열린 단계를 못 셈).
+ */
+const 단계 = (stepNo: number, status: StepStatus) => ({ stepNo, status });
+
+check("차례: 신청 직후에는 첫 단계가 지금 차례다", () => {
+  const steps = [단계(1, "PENDING"), 단계(2, "WAITING"), 단계(3, "WAITING")];
+  assert.deepEqual(findNextStepToApprove(steps), 단계(1, "PENDING"));
+  assert.deepEqual(approvalProgress(steps), {
+    total: 3,
+    position: 1,
+    current: 단계(1, "PENDING"),
+  });
+});
+
+check("차례: 앞사람이 승인하면 다음 WAITING 이 차례가 된다", () => {
+  const steps = [단계(1, "APPROVED"), 단계(2, "WAITING"), 단계(3, "WAITING")];
+  assert.deepEqual(findNextStepToApprove(steps), 단계(2, "WAITING"));
+  assert.equal(approvalProgress(steps).position, 2);
+});
+
+check("🔴 차례: 건너뛴(SKIPPED) 단계도 넘어간다 — 다음 사람이 깨어난다", () => {
+  // 앞사람이 막혀도 뒤가 시작조차 못 하면 신청이 영영 멈춘다.
+  const steps = [단계(1, "SKIPPED"), 단계(2, "WAITING"), 단계(3, "WAITING")];
+  assert.deepEqual(findNextStepToApprove(steps), 단계(2, "WAITING"));
+});
+
+check("🔴 차례: 열린 단계가 하나도 없을 때만 null — 그때가 확정할 때다", () => {
+  assert.equal(findNextStepToApprove([단계(1, "APPROVED"), 단계(2, "APPROVED")]), null);
+  assert.equal(findNextStepToApprove([단계(1, "APPROVED"), 단계(2, "SKIPPED")]), null);
+  assert.equal(findNextStepToApprove([]), null);
+  // 🔴 WAITING 이 남아 있으면 확정이 아니다 (PENDING 만 세면 여기서 틀린다)
+  assert.deepEqual(
+    findNextStepToApprove([단계(1, "APPROVED"), 단계(2, "WAITING")]),
+    단계(2, "WAITING"),
+  );
+});
+
+check("차례: 번호가 뒤죽박죽으로 와도 가장 앞선 것을 고른다", () => {
+  const steps = [단계(3, "WAITING"), 단계(1, "APPROVED"), 단계(2, "PENDING")];
+  assert.deepEqual(findNextStepToApprove(steps), 단계(2, "PENDING"));
+  // 넘겨받은 배열을 뒤집어 놓지 않는다
+  assert.deepEqual(steps.map((s) => s.stepNo), [3, 1, 2]);
+  assert.equal(approvalProgress(steps).position, 2);
+});
+
+check("차례: 결재가 다 끝났으면 지금 차례가 없다 (n/m 은 m/m)", () => {
+  const steps = [단계(1, "APPROVED"), 단계(2, "REJECTED")];
+  assert.deepEqual(approvalProgress(steps), { total: 2, position: 2, current: null });
+  assert.deepEqual(approvalProgress([]), { total: 0, position: 0, current: null });
+});
+
+check("차례: 화면 글자 — 「n/m 단계 · 지금 ○○○ 차례」", () => {
+  const 화면단계 = (stepNo: number, status: StepStatus, name: string) => ({
+    stepNo,
+    status,
+    approverName: name,
+    rankName: "과장",
+  });
+  assert.equal(
+    approvalTurnLabel([
+      화면단계(1, "APPROVED", "정민재"),
+      화면단계(2, "PENDING", "최동욱"),
+      화면단계(3, "WAITING", "윤성호"),
+    ]),
+    "2/3 단계 · 지금 최동욱 차례",
+  );
+  // 끝났거나 단계가 없으면 붙일 말이 없다
+  assert.equal(approvalTurnLabel([화면단계(1, "APPROVED", "정민재")]), null);
+  assert.equal(approvalTurnLabel([]), null);
+  // 사람 칸이 빈 옛 단계는 직급 이름으로 (labels.ts 의 stepLabel 과 같은 규칙)
+  assert.equal(
+    approvalTurnLabel([{ stepNo: 1, status: "PENDING", approverName: null, rankName: "부장" }]),
+    "1/1 단계 · 지금 부장 차례",
+  );
 });
 
 /* ------------------------------------------------------------------ */

@@ -4,8 +4,11 @@
  * 호출하는 쪽(서버 액션)이 로그인·권한을 먼저 확인하고 Member/Viewer 를 넘긴다.
  * 그래도 '누구의 휴가인가 · 이 사람이 결재할 수 있는가'는 여기서 DB 를 다시 읽어 확인한다.
  *
- * 결재는 순서가 없다. 신청하면 결재권자 모두의 결재함에 동시에 들어가고,
- * 모두 승인하면 확정, 한 명이라도 반려하면 그 자리에서 끝난다.
+ * 🔴 결재는 **한 명씩 차례로** 간다 (2026-09-21 사용자 결정, 그전에는 동시).
+ * 신청하면 **첫 사람만** 결재함에 들어가고(PENDING), 나머지는 앞사람을
+ * 기다린다(WAITING). 앞사람이 승인하거나 관리자가 건너뛰면 **다음 사람이
+ * 깨어나고**, 열린 단계(PENDING·WAITING)가 하나도 없을 때 확정한다.
+ * 한 명이라도 반려하면 그 자리에서 끝난다 — 사슬이 끊기고 새 신청은 처음부터다.
  * 폼에서 온 ID 는 대상을 찾는 데만 쓰고 권한 판단에는 쓰지 않는다.
  */
 import { and, asc, eq, inArray } from "drizzle-orm";
@@ -36,6 +39,7 @@ import {
   LEAVE_TYPE_INFO,
   computeLeaveDays,
   expandLeaveDays,
+  findNextStepToApprove,
   shortageIfAdded,
   spansOverlap,
 } from "./rules";
@@ -86,8 +90,12 @@ async function finalize(tx: Tx, req: LeaveRequest): Promise<void> {
 }
 
 /**
- * 아직 기다리고 있는 결재자의 이름. 사람으로 박힌 단계는 사람 이름,
+ * 아직 결재가 남은 사람의 이름 — **차례대로**. 사람으로 박힌 단계는 사람 이름,
  * 전환 전에 만들어진 옛 단계는 직급 이름을 쓴다.
+ *
+ * 🔴 지금 차례인 사람(PENDING)뿐 아니라 **뒤에서 기다리는 사람(WAITING)도**
+ * 센다. 순차에서는 열린 단계 대부분이 WAITING 이라, PENDING 만 세면
+ * 「남은 결재가 없다」가 되어 첫 승인만으로 확정되어 버린다.
  */
 async function remainingApprovers(tx: Tx, requestId: string): Promise<string[]> {
   const rows = await tx
@@ -98,12 +106,52 @@ async function remainingApprovers(tx: Tx, requestId: string): Promise<string[]> 
     .where(
       and(
         eq(webApprovalSteps.requestId, requestId),
-        eq(webApprovalSteps.status, "PENDING"),
+        inArray(webApprovalSteps.status, ["PENDING", "WAITING"]),
         eq(webApprovalSteps.isDeleted, false),
       ),
     )
     .orderBy(asc(webApprovalSteps.stepNo));
   return rows.map((r) => r.name ?? r.rankName);
+}
+
+/**
+ * 🔴 **다음 차례를 깨운다.** 방금 한 단계를 닫은 뒤에 부른다.
+ *
+ * 열려 있는 단계 중 차례가 가장 앞선 것을 `PENDING` 으로 올리고 그 단계를
+ * 돌려준다. `null` 이면 열린 단계가 하나도 없다는 뜻 = **확정할 때**다.
+ *
+ * 차례를 고르는 셈은 `rules.ts` 의 `findNextStepToApprove` 한 곳에 있다
+ * (화면의 「n/m 단계 · 지금 ○○○ 차례」도 같은 함수를 쓴다).
+ *
+ * 🔴 **승인과 건너뛰기가 함께 이것을 부른다.** 순차에서는 앞사람이 막히면
+ * 뒤가 시작조차 못 하므로, 건너뛰기가 다음 사람을 깨우지 않으면 그 신청은
+ * 영영 멈춘다.
+ */
+async function promoteNextStep(
+  tx: Tx,
+  requestId: string,
+): Promise<{ id: string; stepNo: number } | null> {
+  const steps = await tx
+    .select({
+      id: webApprovalSteps.id,
+      stepNo: webApprovalSteps.stepNo,
+      status: webApprovalSteps.status,
+    })
+    .from(webApprovalSteps)
+    .where(
+      and(eq(webApprovalSteps.requestId, requestId), eq(webApprovalSteps.isDeleted, false)),
+    )
+    .orderBy(asc(webApprovalSteps.stepNo));
+
+  const next = findNextStepToApprove(steps);
+  if (!next) return null;
+  if (next.status === "WAITING") {
+    await tx
+      .update(webApprovalSteps)
+      .set({ status: "PENDING", updatedAt: new Date() })
+      .where(eq(webApprovalSteps.id, next.id));
+  }
+  return { id: next.id, stepNo: next.stepNo };
 }
 
 async function skipOpenSteps(tx: Tx, requestId: string): Promise<void> {
@@ -119,7 +167,8 @@ async function skipOpenSteps(tx: Tx, requestId: string): Promise<void> {
 }
 
 /**
- * 신청 행과 결재 단계를 만든다. 결재 단계는 모두 동시에 대기.
+ * 신청 행과 결재 단계를 만든다. 🔴 **첫 단계만 대기(PENDING)** 이고 나머지는
+ * 앞사람을 기다린다(WAITING) — 한 명씩 차례로 결재한다(2026-09-21).
  * 결재할 사람이 없으면 바로 승인한다.
  *
  * 🔴 **결재선은 신청하는 이 순간 단계 행으로 굳혀 박는다.** 나중에 관리자가
@@ -154,16 +203,38 @@ async function createWithChain(
         stepNo: i + 1,
         rankId: approver.rankId,
         approverEmployeeId: approver.employeeId,
-        status: "PENDING" as const,
+        // 🔴 한 명씩 차례로: 첫 사람만 지금 차례이고, 뒷사람은 잠들어 있다.
+        // 결재함 질의와 부분 색인이 둘 다 `status = 'PENDING'` 을 보므로
+        // WAITING 단계는 저절로 남의 결재함에 뜨지 않는다.
+        status: i === 0 ? ("PENDING" as const) : ("WAITING" as const),
       })),
     );
   }
   return { request, chainNames: chain.map((a) => a.name) };
 }
 
+/**
+ * 「먼저 누가 결재하는가」. 순차라 언제나 목록의 첫 사람이 먼저다.
+ * @param done 다 끝나면 무엇이 되는가 — "확정됩니다" · "취소됩니다"
+ */
+function firstApproverLine(chainNames: string[], done: string): string {
+  if (chainNames.length === 1) return `${chainNames[0]} 님이 결재하면 ${done}.`;
+  return `먼저 ${chainNames[0]} 님이 결재합니다. 차례로 ${chainNames.length}명이 모두 승인하면 ${done}. (${chainNames.join(" → ")})`;
+}
+
 function submittedMessage(chainNames: string[]): string {
   if (chainNames.length === 0) return "결재 없이 바로 등록되었습니다.";
-  return `신청했습니다. ${chainNames.join("·")} 모두 승인하면 확정됩니다.`;
+  return `신청했습니다. ${firstApproverLine(chainNames, "확정됩니다")}`;
+}
+
+/**
+ * 한 단계를 처리하고 사슬이 이어질 때 하는 말. `remaining` 은 차례대로 온다
+ * (remainingApprovers). 첫 사람이 방금 깨어난 **다음 차례**다.
+ */
+function nextTurnMessage(head: string, remaining: string[]): string {
+  if (remaining.length === 0) return head; // 여기까지 오지 않는다 (확정 쪽에서 걸린다)
+  if (remaining.length === 1) return `${head} 마지막으로 ${remaining[0]} 님 차례입니다.`;
+  return `${head} 다음은 ${remaining[0]} 님 차례입니다. (남은 결재 ${remaining.length}명: ${remaining.join(" → ")})`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -326,7 +397,7 @@ export async function submitCancel(
     message:
       result.chainNames.length === 0
         ? "휴가를 취소했습니다."
-        : `취소를 신청했습니다. ${result.chainNames.join("·")} 모두 승인하면 취소됩니다.`,
+        : `취소를 신청했습니다. ${firstApproverLine(result.chainNames, "취소됩니다")}`,
     requestId: result.request.id,
     code: result.chainNames.length === 0 ? "canceled" : "cancel-submitted",
   };
@@ -463,13 +534,15 @@ export async function decideStep(
     let finished = false;
     let waitingFor: string[] = [];
     if (approve) {
-      // 아직 승인하지 않은 결재자가 남았는가. 신청 행을 잠근 뒤라 동시에 승인해도 한 번만 확정된다
-      const remaining = await remainingApprovers(tx, req.id);
-      if (remaining.length === 0) {
+      // 🔴 방금 내 단계를 닫았으니 **다음 차례를 깨운다**. 깨울 것이 없으면
+      // (열린 단계가 PENDING·WAITING 통틀어 0) 그때가 확정이다.
+      // 신청 행을 잠근 뒤라 같은 단계를 두 번 눌러도 한 번만 확정된다.
+      const next = await promoteNextStep(tx, req.id);
+      if (!next) {
         await finalize(tx, req);
         finished = true;
       } else {
-        waitingFor = remaining;
+        waitingFor = await remainingApprovers(tx, req.id);
       }
     } else {
       await tx
@@ -500,8 +573,8 @@ export async function decideStep(
   return {
     ok: true,
     message: outcome.finished
-      ? "승인했습니다. 모든 결재권자가 승인해 확정되었습니다."
-      : `승인했습니다. ${outcome.waitingFor.join("·")}의 승인을 기다립니다.`,
+      ? "승인했습니다. 마지막 결재라 확정되었습니다."
+      : nextTurnMessage("승인했습니다.", outcome.waitingFor),
     code: outcome.finished ? "finished" : "approved",
   };
 }
@@ -520,7 +593,15 @@ export async function decideStep(
  * 영영 대기 상태로 남는다.
  *
  * 승인이 아니다 — 단계 상태는 `SKIPPED` 이고, 누가 왜 건너뛰었는지 단계의
- * 의견과 감사 로그에 남는다. 남은 대기가 없으면 그 자리에서 확정된다.
+ * 의견과 감사 로그에 남는다.
+ *
+ * 🔴 **순차가 된 뒤로는 더 중요해졌다.** 건너뛴 뒤에 **다음 사람을 깨우지
+ * 않으면** 그 신청은 영영 멈춘다 (동시에 결재하던 때에는 나머지가 미리
+ * 승인해 둘 수 있어 이 구멍이 없었다). 깨울 사람이 없으면 그 자리에서 확정된다.
+ *
+ * 건너뛸 수 있는 것은 **지금 차례인 단계(PENDING)** 뿐이다. 뒤에서 잠든
+ * 단계(WAITING)는 자기 차례가 와야 건너뛸 수 있다 — 화면도 PENDING 단계만
+ * 내놓는다.
  */
 export async function skipStep(
   admin: Viewer,
@@ -565,8 +646,12 @@ export async function skipStep(
       })
       .where(eq(webApprovalSteps.id, step.id));
 
-    const remaining = await remainingApprovers(tx, req.id);
-    if (remaining.length === 0) await finalize(tx, req);
+    // 🔴 건너뛴 자리에서 **다음 사람을 깨운다.** 순차에서는 앞사람이 막히면
+    // 뒤가 시작조차 못 하므로, 여기서 깨우지 않으면 그 신청은 영영 멈춘다
+    // (동시에 결재하던 때에는 나머지가 미리 승인해 둘 수 있어 이 문제가 없었다).
+    const next = await promoteNextStep(tx, req.id);
+    if (!next) await finalize(tx, req);
+    const remaining = next ? await remainingApprovers(tx, req.id) : [];
 
     await writeAudit(
       {
@@ -578,7 +663,7 @@ export async function skipStep(
       },
       tx,
     );
-    return { finished: remaining.length === 0, waitingFor: remaining, label };
+    return { finished: next === null, waitingFor: remaining, label };
   });
 
   if ("error" in outcome) return fail(outcome.error ?? "처리하지 못했습니다.");
@@ -586,7 +671,7 @@ export async function skipStep(
     ok: true,
     message: outcome.finished
       ? `${outcome.label} 단계를 건너뛰었습니다. 남은 결재가 없어 확정되었습니다.`
-      : `${outcome.label} 단계를 건너뛰었습니다. ${outcome.waitingFor.join("·")}의 승인을 기다립니다.`,
+      : nextTurnMessage(`${outcome.label} 단계를 건너뛰었습니다.`, outcome.waitingFor),
     code: outcome.finished ? "step-skipped-finished" : "step-skipped",
   };
 }

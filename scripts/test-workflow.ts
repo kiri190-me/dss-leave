@@ -4,7 +4,11 @@
  * 반드시 테스트 전용 DB(dss_leave_test)에서만 돈다. 화면용 개발 DB 를 건드리지 않는다.
  * 테스트 DB 는 새로 만들어 `npm run seed:dev` 로 가짜 데이터를 넣은 상태여야 한다.
  *
- * 결재는 순서가 없다: 결재권자 모두에게 동시에 가고, 모두 승인하면 확정, 한 명이라도 반려하면 끝.
+ * 🔴 결재는 **한 명씩 차례로** 간다 (2026-09-21): 첫 사람만 PENDING, 뒤는 WAITING 으로 잠들어 있고,
+ * 앞사람이 승인·건너뜀으로 닫히면 다음이 깨어난다. 열린 단계(PENDING+WAITING)가 0 이면 확정,
+ * 한 명이라도 반려하면 그 자리에서 끝(뒷사람에게 가지 않는다).
+ *
+ * 🔴 이 파일의 `approveAll` 은 **차례대로** 불러야 한다 — 차례가 아닌 단계는 승인되지 않는다.
  */
 import assert from "node:assert/strict";
 
@@ -50,11 +54,17 @@ async function main() {
       );
     return st ?? null;
   }
+  /** 🔴 결재선 차례대로 넘겨야 한다. 순차라 차례가 아닌 단계는 아직 PENDING 이 아니다 */
   async function approveAll(requestId: string, order: Member[]) {
     for (const who of order) {
       const st = await stepFor(requestId, who);
       ok(await wf.decideStep(who, st!.id, true, ""));
     }
+  }
+  /** 단계를 차례(step_no)대로 늘어놓은 상태 배열 — 「지금 어디까지 왔나」를 한눈에 본다 */
+  async function statusesOf(requestId: string): Promise<string[]> {
+    const steps = await stepsOf(requestId);
+    return steps.sort((a, b) => a.stepNo - b.stepNo).map((x) => x.status);
   }
   function ok<T extends { ok: boolean }>(r: T): asserts r is T & { ok: true } {
     if (!r.ok) throw new Error(`실패: ${JSON.stringify(r)}`);
@@ -75,15 +85,20 @@ async function main() {
   };
 
   let newId = "";
-  await step("사원 신청 → 결재선 전원(정민재·최동욱·윤성호)에게 동시에 결재 대기", async () => {
+  await step("🔴 사원 신청 → 단계 셋을 만들되 첫 사람(정민재)만 지금 차례, 뒤는 WAITING", async () => {
     const r = await wf.submitLeave(사원, { leaveType: "ANNUAL", startDate: "2026-11-02", endDate: "2026-11-03", reason: "테스트" });
     ok(r);
     newId = r.requestId!;
-    const steps = await stepsOf(newId);
-    assert.equal(steps.length, 3);
-    assert.ok(steps.every((x) => x.status === "PENDING"));
-    assert.match(r.message, /정민재·최동욱·윤성호 모두 승인하면 확정/);
+    assert.deepEqual(await statusesOf(newId), ["PENDING", "WAITING", "WAITING"]);
+    assert.match(r.message, /먼저 정민재 님이 결재합니다/);
+    assert.match(r.message, /정민재 → 최동욱 → 윤성호/);
     assert.equal((await reqOf(newId)).days, 2);
+  });
+
+  await step("🔴 차례인 사람의 결재함에만 뜬다 (정민재 ○ · 최동욱·윤성호 ×)", async () => {
+    assert.ok((await pendingForApprover(과장)).some((x) => x.id === newId));
+    assert.equal((await pendingForApprover(부장)).some((x) => x.id === newId), false);
+    assert.equal((await pendingForApprover(대표)).some((x) => x.id === newId), false);
   });
 
   await step("대리는 결재할 수 없다", async () => {
@@ -96,11 +111,13 @@ async function main() {
     assert.equal((await wf.decideStep(부장, st!.id, true, "")).ok, false);
   });
 
-  await step("순서 없음: 대표가 먼저 승인해도 된다. 한 명 승인으로는 아직 확정 아님", async () => {
+  // 🔴 뜻이 뒤집힌 옛 시험(「순서 없음: 대표가 먼저 승인해도 된다」)을 지우지 않고
+  // 순차용으로 고쳐 쓴다 — 같은 상황을 **반대 결과로** 확인한다.
+  await step("🔴 차례가 아니면 승인할 수 없다 (대표가 먼저 눌러도 막힌다)", async () => {
     const st = await stepFor(newId, 대표);
-    const r = await wf.decideStep(대표, st!.id, true, "");
-    ok(r);
-    assert.match(r.message, /정민재·최동욱의 승인을 기다립니다/);
+    assert.equal(st!.status, "WAITING");
+    assert.equal((await wf.decideStep(대표, st!.id, true, "")).ok, false);
+    assert.deepEqual(await statusesOf(newId), ["PENDING", "WAITING", "WAITING"]);
     assert.equal((await reqOf(newId)).status, "PENDING");
   });
 
@@ -109,15 +126,32 @@ async function main() {
     assert.equal((await wf.decideStep(과장, st!.id, false, "  ")).ok, false);
   });
 
-  await step("남은 두 명이 동시에 승인해도 한 번만 확정된다", async () => {
+  await step("🔴 앞사람이 승인하면 다음 사람이 깨어난다 (한 명 승인으로는 확정 아님)", async () => {
+    const st = await stepFor(newId, 과장);
+    const r = await wf.decideStep(과장, st!.id, true, "");
+    ok(r);
+    assert.equal(r.code, "approved");
+    assert.match(r.message, /다음은 최동욱 님 차례입니다/);
+    assert.deepEqual(await statusesOf(newId), ["APPROVED", "PENDING", "WAITING"]);
+    assert.equal((await reqOf(newId)).status, "PENDING");
+    // 결재함도 한 칸 옮겨 간다
+    assert.ok((await pendingForApprover(부장)).some((x) => x.id === newId));
+    assert.equal((await pendingForApprover(대표)).some((x) => x.id === newId), false);
+  });
+
+  await step("🔴 마지막 사람이 승인하면 확정 — 같은 단계를 동시에 두 번 눌러도 한 번만", async () => {
+    await approveAll(newId, [부장]);
+    assert.deepEqual(await statusesOf(newId), ["APPROVED", "APPROVED", "PENDING"]);
+
+    // 마지막 단계를 두 번 동시에: 단계 행과 신청 행을 잠그므로 하나만 통과한다
+    const last = await stepFor(newId, 대표);
     const [a, b] = await Promise.all([
-      stepFor(newId, 과장).then((st) => wf.decideStep(과장, st!.id, true, "")),
-      stepFor(newId, 부장).then((st) => wf.decideStep(부장, st!.id, true, "")),
+      wf.decideStep(대표, last!.id, true, ""),
+      wf.decideStep(대표, last!.id, true, ""),
     ]);
-    ok(a);
-    ok(b);
-    const finishedCount = [a, b].filter((x) => x.code === "finished").length;
-    assert.equal(finishedCount, 1);
+    assert.equal([a, b].filter((x) => x.ok).length, 1);
+    assert.equal([a, b].filter((x) => x.ok && x.code === "finished").length, 1);
+    assert.deepEqual(await statusesOf(newId), ["APPROVED", "APPROVED", "APPROVED"]);
     assert.equal((await reqOf(newId)).status, "APPROVED");
   });
 
@@ -138,39 +172,41 @@ async function main() {
   });
 
   let changeId = "";
-  await step("결재 후 날짜 변경 → 모두 다시 결재, 그동안 원래 휴가 유지", async () => {
+  await step("결재 후 날짜 변경 → 차례로 다시 결재, 그동안 원래 휴가 유지", async () => {
     const r = await wf.submitLeave(사원, { leaveType: "ANNUAL", startDate: "2026-11-05", endDate: "2026-11-06", reason: "변경" }, newId);
     ok(r);
     changeId = r.requestId!;
     assert.equal((await reqOf(newId)).status, "APPROVED");
     assert.equal((await reqOf(changeId)).status, "PENDING");
+    assert.deepEqual(await statusesOf(changeId), ["PENDING", "WAITING", "WAITING"]);
   });
 
-  await step("누구든 한 명이 반려하면 끝, 나머지 대기는 정리되고 원래 휴가 그대로", async () => {
+  await step("누구든 한 명이 반려하면 끝, 뒷사람에게 가지 않고 원래 휴가 그대로", async () => {
     await approveAll(changeId, [과장]);
     const st = await stepFor(changeId, 부장);
     ok(await wf.decideStep(부장, st!.id, false, "그 주는 곤란"));
     assert.equal((await reqOf(changeId)).status, "REJECTED");
-    const steps = await stepsOf(changeId);
-    assert.ok(steps.every((x) => x.status !== "PENDING"));
+    // 🔴 반려 뒤에는 열린 단계가 하나도 없어야 한다 — 아직 차례가 오지 않은
+    // WAITING(윤성호)까지 정리되지 않으면 그 신청은 끝나고도 결재함에 남는다
+    assert.deepEqual(await statusesOf(changeId), ["APPROVED", "REJECTED", "SKIPPED"]);
     assert.equal((await reqOf(newId)).status, "APPROVED");
   });
 
-  await step("변경이 모두 승인되면 원래 휴가는 '변경됨'", async () => {
+  await step("변경이 차례로 모두 승인되면 원래 휴가는 '변경됨'", async () => {
     const r = await wf.submitLeave(사원, { leaveType: "ANNUAL", startDate: "2026-11-05", endDate: "2026-11-06", reason: "변경2" }, newId);
     ok(r);
     changeId = r.requestId!;
-    await approveAll(changeId, [부장, 대표, 과장]);
+    await approveAll(changeId, [과장, 부장, 대표]); // 🔴 차례대로만 승인된다
     assert.equal((await reqOf(newId)).status, "SUPERSEDED");
     assert.equal((await reqOf(changeId)).status, "APPROVED");
   });
 
-  await step("결재 후 취소 → 모두 다시 승인 → 취소됨, 일수 돌려받음", async () => {
+  await step("결재 후 취소 → 차례로 다시 승인 → 취소됨, 일수 돌려받음", async () => {
     const before = await getBalance(사원.employee);
     const r = await wf.submitCancel(사원, changeId, "일정 취소");
     ok(r);
     assert.equal((await reqOf(changeId)).status, "APPROVED"); // 승인 전까지 유지
-    await approveAll(r.requestId!, [대표, 과장, 부장]);
+    await approveAll(r.requestId!, [과장, 부장, 대표]);
     assert.equal((await reqOf(changeId)).status, "CANCELED");
     const after = await getBalance(사원.employee);
     assert.equal(after.annual.remaining, before.annual.remaining + 2);
@@ -182,7 +218,8 @@ async function main() {
     await approveAll(r.requestId!, [과장]);
     ok(await wf.withdrawRequest(사원, r.requestId!));
     assert.equal((await reqOf(r.requestId!)).status, "WITHDRAWN");
-    assert.ok((await stepsOf(r.requestId!)).every((x) => x.status !== "PENDING"));
+    // 지금 차례(PENDING)와 뒤에서 기다리던 것(WAITING)이 함께 정리된다
+    assert.deepEqual(await statusesOf(r.requestId!), ["APPROVED", "SKIPPED", "SKIPPED"]);
   });
 
   await step("남의 신청은 거둬들일 수 없다", async () => {
@@ -195,8 +232,10 @@ async function main() {
   await step("결재선 안의 사람이 신청하면 자기 뒤만 결재 (정민재 → 최동욱·윤성호)", async () => {
     const r = await wf.submitLeave(과장, { leaveType: "ANNUAL", startDate: "2026-11-16", endDate: "2026-11-16", reason: "" });
     ok(r);
-    assert.match(r.message, /최동욱·윤성호 모두 승인하면/);
-    assert.equal((await stepsOf(r.requestId!)).length, 2);
+    // 🔴 「자기 뒤만 결재한다」는 규칙(approversAfter)은 순차로 바뀌어도 그대로다
+    assert.match(r.message, /먼저 최동욱 님이 결재합니다/);
+    assert.match(r.message, /최동욱 → 윤성호/);
+    assert.deepEqual(await statusesOf(r.requestId!), ["PENDING", "WAITING"]);
     const st = await stepFor(r.requestId!, 부장);
     assert.equal((await wf.decideStep(과장, st!.id, true, "")).ok, false);
     ok(await wf.withdrawRequest(과장, r.requestId!));
@@ -340,12 +379,21 @@ async function main() {
     const st = await stepFor(r.requestId!, 과장);
     assert.equal((await wf.skipStep(사원, st!.id, "퇴사")).ok, false); // 관리자만
     assert.equal((await wf.skipStep(관리자, st!.id, "  ")).ok, false); // 사유 필수
+    // 🔴 아직 차례가 오지 않은 단계는 미리 건너뛸 수 없다 (지금 차례인 것만)
+    const 뒷단계 = await stepFor(r.requestId!, 대표);
+    assert.equal(뒷단계!.status, "WAITING");
+    assert.equal((await wf.skipStep(관리자, 뒷단계!.id, "미리")).ok, false);
     ok(await wf.skipStep(관리자, st!.id, "퇴사"));
 
     const skipped = (await stepsOf(r.requestId!)).find((x) => x.id === st!.id)!;
     assert.equal(skipped.status, "SKIPPED");
     assert.match(skipped.comment!, /퇴사/);
     assert.equal((await reqOf(r.requestId!)).status, "PENDING"); // 아직 둘 남았다
+
+    // 🔴 건너뛴 뒤에도 **다음 사람이 깨어나야** 한다. 순차에서는 앞사람이 막히면
+    // 뒤가 시작조차 못 하므로, 여기서 깨우지 않으면 그 신청은 영영 멈춘다.
+    assert.deepEqual(await statusesOf(r.requestId!), ["SKIPPED", "PENDING", "WAITING"]);
+    assert.ok((await pendingForApprover(부장)).some((x) => x.id === r.requestId));
 
     await approveAll(r.requestId!, [부장]);
     const last = await stepFor(r.requestId!, 대표);

@@ -179,7 +179,7 @@ export default async function CalendarPage({
                             <span
                               key={e.requestId}
                               title={`${e.employeeName} ${e.rankName} · ${LEAVE_TYPE_INFO[e.leaveType].label}${
-                                e.pending ? " (결재 대기)" : ""
+                                e.pending ? ` (결재 중${e.turnLabel ? ` — ${e.turnLabel}` : ""})` : ""
                               }`}
                               className={`block truncate rounded border px-1.5 py-0.5 text-xs ${TYPE_CHIP[e.leaveType]} ${
                                 e.pending ? "animate-pulse border-dashed" : ""
@@ -262,6 +262,10 @@ export default async function CalendarPage({
                       {formatRange(e.startDate, e.endDate)} · {formatDays(e.days)}
                       {e.kind === "CHANGE" && " · 날짜 변경분"}
                     </p>
+                    {/* 한 명씩 차례로 결재하므로 「결재 중」만으로는 누구 차례인지 알 수 없다 */}
+                    {e.turnLabel && (
+                      <p className="mt-0.5 text-xs text-amber-800">{e.turnLabel}</p>
+                    )}
                     {e.reason && <p className="mt-0.5 text-xs text-slate-700">사유: {e.reason}</p>}
                   </li>
                 ))}

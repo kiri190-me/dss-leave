@@ -54,7 +54,9 @@ export default async function ApprovalsPage({
         <h1 className="mb-1 text-xl font-semibold text-slate-900">결재함</h1>
         <DoneBanner code={sp.done} className="mb-4" />
         <p className="mb-4 text-sm text-slate-500">
-          내 승인을 기다리는 신청입니다. 결재선의 결재자가 순서 없이 모두 승인하면 확정되고, 한 명이라도 반려하면 그 자리에서 끝납니다.
+          <b>지금 내 차례인</b> 신청입니다. 결재는 결재선을 따라 <b>한 명씩 차례로</b> 갑니다 — 내가 승인하면 다음
+          사람에게 넘어가고, 마지막 사람이 승인하면 확정됩니다. 한 명이라도 반려하면 그 자리에서 끝나고 뒷사람에게는
+          가지 않습니다.
         </p>
 
         {items.length === 0 ? (

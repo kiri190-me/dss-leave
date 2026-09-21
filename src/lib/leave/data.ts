@@ -24,6 +24,7 @@ import {
   type Rank,
 } from "@/lib/db/schema";
 import { myStepCondition, type Decider } from "./approval-scope";
+import { approvalTurnLabel } from "./labels";
 import {
   approversAfter,
   balanceOn,
@@ -297,6 +298,12 @@ export type CalendarEntry = {
   endDate: string;
   days: number;
   pending: boolean;
+  /**
+   * 결재 중이면 「2/3 단계 · 지금 최동욱 차례」. 승인된 휴가나 단계가 없는
+   * 신청은 null. 한 명씩 차례로 결재하므로 「대기」만으로는 누구 차례인지
+   * 알 수 없어 함께 싣는다 (labels.ts 의 approvalTurnLabel).
+   */
+  turnLabel: string | null;
   /** 볼 권한이 없으면 null */
   reason: string | null;
   isMine: boolean;
@@ -324,6 +331,11 @@ export async function calendarEntries(
     )
     .orderBy(desc(webRanks.sortOrder), asc(webEmployees.name), asc(webLeaveRequests.startDate));
 
+  // 결재 중인 것만 단계를 읽는다 — 확정된 휴가에는 보여 줄 차례가 없다
+  const steps = await stepsFor(
+    rows.filter((r) => r.req.status === "PENDING").map((r) => r.req.id),
+  );
+
   return rows.map((r) => ({
     requestId: r.req.id,
     employeeId: r.req.employeeId,
@@ -335,6 +347,8 @@ export async function calendarEntries(
     endDate: r.req.endDate,
     days: r.req.days,
     pending: r.req.status === "PENDING",
+    turnLabel:
+      r.req.status === "PENDING" ? approvalTurnLabel(steps.get(r.req.id) ?? []) : null,
     reason: canSeeReason(viewer, r.req.employeeId) ? r.req.reason : null,
     isMine: viewer.employee?.id === r.req.employeeId,
   }));

@@ -137,7 +137,7 @@ function RequestCard({ r, today }: { r: RequestView; today: string }) {
               </Link>
               <ActionForm
                 action={cancelLeaveAction}
-                confirm="이 휴가의 취소를 신청할까요? 결재권자가 모두 다시 승인해야 취소됩니다."
+                confirm="이 휴가의 취소를 신청할까요? 결재선의 결재자가 차례로 모두 승인해야 취소됩니다."
                 className="flex flex-wrap items-center gap-2"
               >
                 <input type="hidden" name="targetId" value={r.id} />
