@@ -22,6 +22,8 @@ import {
   type Rank,
   type WebUser,
 } from "@/lib/db/schema";
+import { env } from "@/lib/env";
+import { RETURN_TO_FALLBACK, safeReturnTo } from "./return-to";
 import { getSessionUser } from "./session";
 
 export type EmployeeWithRank = Employee & { rank: Rank };
@@ -37,16 +39,19 @@ export type Viewer = {
 export type Member = Viewer & { employee: EmployeeWithRank };
 
 /**
- * 로그인 후 돌아갈 주소를 안전하게 다듬는다.
- * '/'로 시작하고 '//'로 시작하지 않는 경로만 허용한다. 역슬래시가 섞인 값도 거절한다.
+ * 로그인 후 돌아갈 주소의 판정은 auth/return-to.ts 한 곳이 갖는다.
+ *
+ * 이 파일이 갖지 않는 이유: 그 판정은 import 가 하나도 없는 순수 함수여야
+ * 시험할 수 있는데, 이 파일은 next/navigation 과 세션(→ DB)을 끌고 온다.
+ * 여기서 다시 내보내는 것은 부르는 쪽(로그인 통로·로그인 화면·서버 액션)이
+ * 「로그인 문지기」 한 곳만 알면 되게 하려는 것이다.
+ *
+ * 🔴 2026-09-21 까지 여기 **네 줄**짜리 판정이 있었다. 제어문자를 막지 않아
+ * "/(탭)/evil.example" 이 그대로 통과했고(브라우저가 탭을 지우면 "//evil.example"
+ * 이 된다), 한글이 든 주소는 응답 머리말에 실리지 못해 로그인이 500 으로 끝났다.
+ * 무엇이 왜 더해졌는지는 return-to.ts 머리말에 적혀 있다.
  */
-export function safeReturnTo(value: string | null | undefined): string {
-  if (!value) return "/";
-  if (!value.startsWith("/")) return "/";
-  if (value.startsWith("//")) return "/";
-  if (value.includes("\\")) return "/";
-  return value;
-}
+export { RETURN_TO_FALLBACK, RETURN_TO_MAX_LENGTH, safeReturnTo } from "./return-to";
 
 export async function loadEmployee(
   employeeId: string,
@@ -80,13 +85,31 @@ export const getViewer = cache(async (): Promise<Viewer | null> => {
   };
 });
 
-/** 로그인 필수. 없으면 로그인 화면으로 보낸다. */
+/**
+ * 로그인 필수. 없으면 통합 로그인으로 보낸다.
+ *
+ * 포털 설정이 있으면 `/api/auth/sso/start` 로 **곧장** 보낸다. `/login` 을
+ * 거치지 않는 이유: 그 화면에 있는 것이라고는 "포털로 가세요" 버튼 하나뿐이라
+ * 포털 앱 런처에서 타일을 눌러 들어온 사람에게는 눌러야 할 버튼이 하나 느는
+ * 일일 뿐이다.
+ *
+ * 포털 설정이 없으면(= 아직 등록 전이거나 임시 로그인만 쓰는 개발 PC)
+ * `/login` 으로 보낸다 — 거기에 임시 로그인 뒷문이 있다.
+ *
+ * `/login` 화면 자체는 남는다: 로그인이 **거절됐을 때** 이유를 보여줄 자리가
+ * 필요하고, 그 화면에서는 자동으로 다시 보내지 않는다(그러면 무한 왕복이 된다).
+ */
 export async function requireSession(returnTo?: string): Promise<Viewer> {
   const viewer = await getViewer();
   if (!viewer) {
+    // 🔴 여기까지 온 값은 무엇이든 safeReturnTo 를 거친다. 부르는 쪽이 주소를
+    // 어디서 얻었든(화면·링크·손으로 친 주소) 믿지 않는다.
     const target = safeReturnTo(returnTo);
+    const base = env.ssoConfigured ? "/api/auth/sso/start" : "/login";
     redirect(
-      target === "/" ? "/login" : `/login?returnTo=${encodeURIComponent(target)}`,
+      target === RETURN_TO_FALLBACK
+        ? base
+        : `${base}?returnTo=${encodeURIComponent(target)}`,
     );
   }
   return viewer;

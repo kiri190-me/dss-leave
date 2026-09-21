@@ -1,11 +1,15 @@
-// dss-auth OIDC 연결 시 폐기 대상
+// 임시 로그인 — 통합 로그인이 막혔을 때 들어갈 **뒷문**. 기본값은 꺼짐.
 //
-// 포털(dss-auth)의 /authorize · /token · /userinfo · /jwks 가 아직 열리지 않아
-// 실제 연동 테스트를 할 수 없다. 그동안 개발을 진행하기 위한 임시 로그인이다.
+// 🔴 지우지 않는다(2026-09-21 결정). 통합 로그인(auth/oidc.ts)이 붙은 뒤에도
+//    남긴다 — 포털이 멈췄거나, 아직 이 시스템을 등록하기 전이거나, Wi-Fi 가
+//    바뀌어 issuer 주소가 어긋났을 때 들어갈 길이 하나는 있어야 한다.
+//    그런 때가 실제로 있었고, 그때 손쓸 방법이 없으면 휴가 결재가 멈춘다.
 //
-// - DEV_FAKE_LOGIN_ENABLED === "true" 일 때만 동작한다. 기본값은 꺼짐.
-// - 포털이 준비되면 이 파일과 /login 의 임시 로그인 UI 를 통째로 지우고
-//   oidc.ts 로 갈아끼운다. 세션(session.ts)·권한(guards.ts)은 손대지 않아도 된다.
+// - DEV_FAKE_LOGIN_ENABLED === "true" 일 때만 동작한다. 기본값은 꺼짐이고,
+//   이 파일의 모든 함수가 assertEnabled 로 그것을 다시 확인한다.
+// - 통합 로그인과 **나란히 선다.** 갈라지는 곳은 「누구인지 어떻게 알았는가」
+//   뿐이고, 두 길 다 web_users 의 한 행으로 모인 뒤 session.ts 의
+//   createSession(userId) 하나로 끝난다. 세션·권한은 어느 쪽인지 모른다.
 import { createHash } from "node:crypto";
 
 import { and, asc, eq } from "drizzle-orm";

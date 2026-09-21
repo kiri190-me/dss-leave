@@ -41,35 +41,48 @@ DSS 통합 로그인 포털(dss-auth) 뒤에 붙는 사내 시스템 중 하나�
 실제 명단·설정은 운영 시작 때 휴가 관리자가 화면에서 넣는다. 데모나 개발 확인이 필요하면
 `npm run seed:dev` 로 가짜 데이터를 다시 넣을 수 있다 (명단이 비어 있을 때만 들어간다).
 
+**2026-09-21 — DSS 통합 로그인(OIDC)을 붙였다 · 포트를 3700 으로 옮겼다**
+표준 OIDC Authorization Code + PKCE(S256). 포털과 이야기하는 코드는 `src/lib/auth/oidc.ts`
+한 곳에 있고, 통로는 `src/app/api/auth/sso/`(start · callback · backchannel-logout) 셋이다.
+**세션 방식은 그대로다** — `web_sessions`(서버 저장형)를 쓰고, 백채널 로그아웃은 그 행에
+`revoked_at` 을 적는 것으로 끝난다. **스키마 변경 0.**
+돌아갈 주소 판정은 `src/lib/auth/return-to.ts` 로 옮겼다(예전 `guards.ts` 의 네 줄짜리는
+제어문자를 막지 못했고 한글 주소에서 500 이 났다). `npm run test:auth` 가 지킨다.
+임시 로그인은 **지우지 않고 뒷문으로 남겼다**(기본 꺼짐).
+🔴 포털 등록은 아직 안 돼 있다 — `SSO_CLIENT_SECRET` 을 받아 `.env.local` 에 적어야 끝까지 간다.
+
 ### 다음에 할 일
 
 | | 작업 |
 |---|---|
 | 1 | 사용자 수정 요청 반영 |
 | 2 | **입사일 기준 전환 숙제** — REQUIREMENTS 9-13: 2027-01-01에 켤 때 사람마다 잔여를 관리자 조정으로 맞춰 넣어야 한다. 9-14(취업규칙)도 대표 확인 필요 |
-| 3 | dss-auth OIDC 연결 — **다른 직원이 한다.** `src/lib/auth/` 에 oidc.ts 를 넣고 dev-login.ts 를 지운다 |
+| 3 | **포털 등록** — dss-auth 에 `dss-leave` 클라이언트를 등록하고 `SSO_CLIENT_SECRET` 을 받아 `.env.local` 에 적는다. 등록할 값은 README 의 「포털에 등록할 값」 표에 있다. 코드 쪽 연동은 2026-09-21 에 끝났다 |
 | 4 | 운영 시작 전: 실제 명단·입사일·근속 표 입력, 공휴일 확인, NAS 배포 |
 
 ---
 
 ## 시작하는 방법
 
-PostgreSQL 은 계측기 시스템과 같은 서버(`C:\Users\이남준\pgsql`, 서비스 등록 안 됨)를 쓰고
-DB 만 따로다(`dss_leave`). PC 를 껐다 켰으면 둘 다 꺼져 있다.
+PostgreSQL 은 **이 시스템 전용 Docker 상자**를 쓴다 (`docker-compose.yml`, `127.0.0.1:5448`).
+다른 시스템의 DB 상자는 건드리지 않는다.
 
 ```
-"C:\Users\이남준\pgsql\bin\pg_ctl.exe" -D C:\pgdata -l C:\pgdata\server.log start
+npm run db:up    # docker compose 는 .env.local 을 스스로 읽지 않는다 — 이 스크립트가 넘겨준다
 npm run dev
 ```
 
-http://localhost:3300 → 임시 로그인에서 사람 고르기 (전부 가짜 이름)
+http://localhost:3700 → 「DSS 통합 로그인으로 들어가기」(포털 3100)
+임시 로그인(`DEV_FAKE_LOGIN_ENABLED=true`)을 켜면 그 아래에 사람 고르는 목록이 함께 나온다.
 
 ---
 
 ## 이 프로젝트에서 지켜야 할 것
 
-- **로그인을 만들지 않는다.** dss-auth 포털에 OIDC 로 위임한다. 지금은 임시 로그인
-  (`src/lib/auth/dev-login.ts`, `DEV_FAKE_LOGIN_ENABLED`, 기본값 꺼짐).
+- **로그인을 만들지 않는다.** dss-auth 포털에 OIDC 로 위임한다 (`src/lib/auth/oidc.ts` 한 곳이
+  포털과 이야기한다). 임시 로그인(`src/lib/auth/dev-login.ts`, `DEV_FAKE_LOGIN_ENABLED`,
+  기본값 꺼짐)은 **지우지 않고 뒷문으로 남겨 둔다** — 통합 로그인이 막혔을 때 들어갈 길이
+  하나는 있어야 한다. 두 길은 결국 `createSession(userId)` 하나로 모인다.
 - **dss-auth 의 DB 에 접근하지 않는다.** 사람은 ID 토큰의 `sub`(= `web_users.auth_sub`)로만 잇는다.
 - **역할은 이 사이트가 갖는다.** `web_users.role` = MEMBER / LEAVE_ADMIN(휴가 관리자).
   결재권은 역할이 아니라 **직급**(`web_ranks.can_approve`)으로 정해진다.
@@ -110,4 +123,7 @@ http://localhost:3300 → 임시 로그인에서 사람 고르기 (전부 가짜
 - **교산 휴무일(일본 법정 휴일)은 DB 에 없다.** `src/lib/jp-holidays.ts` 가 법 규칙으로 해마다 계산한다
   (고정일·해피 먼데이·춘분/추분·대체휴일·국민의 휴일). **표시 전용**이라 한국 휴가 일수 계산에 넣지 않는다.
   일본이 법을 바꾸거나 임시 휴일을 정하면 이 파일을 고치고 `npm run test:leave` 의 연도별 목록을 늘린다.
-- 포트 3300. 계측기 3200 · A/S 3000 · dss-auth 3100 과 겹치지 않게.
+- 포트 **3700**. 사내 시스템이 한 PC 에서 함께 뜬다 — 3000 A/S · 3100 통합 로그인 포털 ·
+  3200 회사 홈페이지 · **3300 계측기** · 3400 시너지 출석부 · 3500 개선요청 · 3600 PO/내자.
+  (이 문서가 한동안 「계측기 3200」이라고 적고 있었는데 틀린 값이다. 3200 은 회사 홈페이지다.)
+  DB 상자는 `127.0.0.1:5448` — 5433 은 A/S 옛 상자 자리라 쓰지 않는다.

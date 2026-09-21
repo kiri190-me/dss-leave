@@ -1,16 +1,44 @@
-# 개발용 PostgreSQL (Docker 가 있는 PC 에서만).
-# 지금 개발 PC 에는 Docker 가 없어서 C:\Users\이남준\pgsql 의 PostgreSQL 에
-# dss_leave DB 를 따로 만들어 쓴다. (계측기 DB 와 섞이지 않는다)
+# DSS 휴가 관리 전용 PostgreSQL (개발용. 운영은 NAS 의 Docker 다).
+#
+# ⚠️ 반드시 `npm run db:up` 으로 띄운다.
+#   docker compose 는 .env 만 자동으로 읽고 .env.local 은 읽지 않는다. 그냥
+#   `docker compose up` 을 하면 POSTGRES_PASSWORD 가 빈 값이 되어 컨테이너가
+#   재시작 루프에 빠진다. db:up 스크립트가 --env-file .env.local 을 붙인다.
+#   (dss-auth · 계측기 · 개선요청에서 실제로 겪은 함정이라 같은 장치를 둔다.)
+#
+# 🔴 이 상자는 이 시스템 전용이다. 다른 시스템의 DB 상자를 건드리지 않는다.
+#
+# 포트가 5448 인 이유: 이 개발 PC 에서 5432·5433(A/S 옛 상자) · 5434(dss-auth
+# 옛 상자) · 5436(회사 홈페이지) · 5438(계측기 옛 상자) · 5442(dss-pg-app 공용) ·
+# 5444(dss-pg-auth) · 5446(개선요청) 이 이미 쓰인다. 통합 로그인 왕복을 보려면
+# 포털과 이 사이트가 **동시에** 떠 있어야 하므로 겹치면 안 된다.
+#
+# 버전을 17 로 맞춘 이유: NAS 운영 인스턴스가 postgres:17 이다. 개발 DB 가
+# 낮으면 운영에서 뜬 백업 dump 를 열지 못하고(아카이브 형식 거절), 되돌려
+# 보지 못하는 백업은 백업이라 부르기 어렵다.
+#
+# 127.0.0.1 에만 바인딩한다 — 개발 PC 밖에서는 직접 접속할 수 없다.
 services:
   db:
-    image: postgres:17
+    image: postgres:17-alpine
+    container_name: dss-leave-postgres-dev
+    restart: unless-stopped
     environment:
       POSTGRES_USER: dss_leave
       POSTGRES_PASSWORD: ${DSS_LEAVE_DB_PASSWORD:?DSS_LEAVE_DB_PASSWORD 를 설정하세요}
       POSTGRES_DB: dss_leave
+      # 한국어 이름을 정렬·검색하므로 로케일을 명시한다.
+      LANG: ko_KR.UTF-8
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5448:5432"
     volumes:
-      - dss_leave_pg:/var/lib/postgresql/data
+      - dss-leave-postgres-dev-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dss_leave -d dss_leave"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
 volumes:
-  dss_leave_pg:
+  dss-leave-postgres-dev-data:
+    name: dss-leave-postgres-dev-data
