@@ -9,11 +9,17 @@ import {
   saveTenureRuleAction,
 } from "@/app/actions/admin";
 import { ActionForm } from "@/components/ActionForm";
+import { ApprovalRouteCard } from "@/components/ApprovalRouteCard";
 import { requireAdmin } from "@/lib/auth/guards";
 import { formatDay, todayKst, yearOf } from "@/lib/dates";
 import { db } from "@/lib/db";
 import { webTenureRules } from "@/lib/db/schema";
-import { loadHolidays, loadRanks } from "@/lib/leave/data";
+import {
+  loadApprovalRoute,
+  loadHolidays,
+  loadRanks,
+  loadRouteCandidates,
+} from "@/lib/leave/data";
 import { and, asc, eq } from "drizzle-orm";
 
 const input =
@@ -33,7 +39,7 @@ export default async function SettingsPage({
   const yearParam = typeof sp.year === "string" ? Number(sp.year) : NaN;
   const year = Number.isInteger(yearParam) && yearParam >= 2000 && yearParam <= 2100 ? yearParam : thisYear;
 
-  const [rules, ranks, holidays] = await Promise.all([
+  const [rules, ranks, holidays, route, routeCandidates] = await Promise.all([
     db
       .select()
       .from(webTenureRules)
@@ -41,9 +47,9 @@ export default async function SettingsPage({
       .orderBy(asc(webTenureRules.fromYear)),
     loadRanks(),
     loadHolidays(`${year}-01-01`, `${year}-12-31`),
+    loadApprovalRoute(),
+    loadRouteCandidates(),
   ]);
-
-  const approverNames = ranks.filter((r) => r.canApprove);
 
   return (
     <div className="space-y-8">
@@ -94,12 +100,16 @@ export default async function SettingsPage({
         </ActionForm>
       </section>
 
+      {/* 승인 절차 — 결재선(사람 순서 목록). 결재를 정하는 곳은 여기 하나다 */}
+      <ApprovalRouteCard route={route} candidates={routeCandidates} />
+
       {/* 직급 */}
       <section className="rounded-lg border border-slate-200 bg-white p-4">
-        <h2 className="text-sm font-semibold text-slate-800">직급과 결재권자</h2>
+        <h2 className="text-sm font-semibold text-slate-800">직급</h2>
         <p className="mb-3 mt-0.5 text-xs text-slate-500">
-          순서 숫자가 클수록 높은 직급입니다. 신청하면 신청자보다 높은 직급 중 &lsquo;결재&rsquo;에 체크된 직급 모두에게 동시에 가고,
-          순서 없이 모두 승인하면 확정됩니다. 그 직급에 사람이 없으면 빠집니다. 맨 위 직급(대표)은 결재 없이 바로 등록됩니다.
+          순서 숫자가 클수록 높은 직급입니다. 🔴 <b>누가 결재하는지는 직급이 아니라 위 「승인 절차」의 사람 목록이
+          정합니다</b> (2026-09-21 변경). 여기 &lsquo;결재&rsquo; 체크는 이제 <b>휴가 사유를 볼 수 있는 직급</b>과
+          머리말에 「결재함」 메뉴가 보이는 직급만 정합니다.
         </p>
         <div className="space-y-2">
           {ranks.map((r) => (
@@ -119,10 +129,6 @@ export default async function SettingsPage({
                   저장
                 </button>
               </ActionForm>
-              <span className="text-xs text-slate-400">
-                신청 시 결재권자:{" "}
-                {approverNames.filter((a) => a.sortOrder > r.sortOrder).map((a) => a.name).join(" · ") || "없음 (바로 등록)"}
-              </span>
               <ActionForm action={deleteRankAction} confirm={`'${r.name}' 직급을 지울까요?`}>
                 <input type="hidden" name="id" value={r.id} />
                 <button type="submit" className={delBtn}>

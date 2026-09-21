@@ -10,7 +10,7 @@ import {
   unlinkUserAction,
   updateEmployeeAction,
 } from "@/app/actions/admin";
-import { adminCancelAction } from "@/app/actions/leave";
+import { adminCancelAction, skipStepAction } from "@/app/actions/leave";
 import { ActionForm } from "@/components/ActionForm";
 import { KindBadge, StatusBadge, TypeChip } from "@/components/badges";
 import { DoneBanner } from "@/components/DoneBanner";
@@ -27,7 +27,7 @@ import {
   loadRules,
   requestsOfEmployee,
 } from "@/lib/leave/data";
-import { formatDays } from "@/lib/leave/labels";
+import { formatDays, stepLabel } from "@/lib/leave/labels";
 import { allocate, annualEntitlement, leaveYearOf, monthlyInfo, tenureOn } from "@/lib/leave/rules";
 
 const input =
@@ -199,7 +199,9 @@ export default async function EmployeeDetailPage({
             </ul>
           )}
           <p className="mt-4 text-xs text-slate-500">
-            결재 권한은 계정이 아니라 직급으로 정해집니다 ({ranks.filter((r) => r.canApprove).map((r) => r.name).join("·")}).
+            누가 결재하는지는 계정도 직급도 아닌 <b>결재선</b>이 정합니다 (휴가 설정 → 승인 절차). 직급의 결재권
+            ({ranks.filter((r) => r.canApprove).map((r) => r.name).join("·") || "없음"})은 휴가 사유를 볼 수 있는
+            범위와 머리말의 「결재함」 메뉴에만 쓰입니다.
           </p>
         </section>
       </div>
@@ -396,6 +398,54 @@ export default async function EmployeeDetailPage({
                       취소 처리
                     </button>
                   </ActionForm>
+                )}
+                {/*
+                  🔴 막힌 결재를 푸는 유일한 출구다 (2026-09-21 사용자 결정).
+                  결재선이 직급이던 때에는 같은 직급의 다른 사람이 대신 결재할 수
+                  있었는데, 사람으로 고정하면서 그 안전망이 사라졌다 — 결재자가
+                  퇴사하면 그 신청은 영영 대기로 남는다. 승인이 아니라 '건너뜀'이고
+                  누가 왜 건너뛰었는지 감사 로그에 남는다.
+                */}
+                {r.status === "PENDING" && r.steps.some((s) => s.status === "PENDING") && (
+                  <div className="basis-full pt-1">
+                    <p className="text-[11px] text-slate-500">
+                      결재 대기 중입니다. 결재자가 퇴사했거나 오래 자리를 비워 막혔다면 그 단계를 건너뛸 수
+                      있습니다 (승인이 아니라 건너뜀으로 기록됩니다).
+                    </p>
+                    <div className="mt-1 flex flex-col gap-1">
+                      {r.steps
+                        .filter((s) => s.status === "PENDING")
+                        .map((s) => (
+                          <ActionForm
+                            key={s.id}
+                            action={skipStepAction}
+                            confirm={`${stepLabel(s)} 단계를 건너뛸까요? 승인이 아니라 건너뜀으로 남습니다.`}
+                            className="flex flex-wrap items-center gap-2"
+                          >
+                            <input type="hidden" name="stepId" value={s.id} />
+                            <input
+                              type="hidden"
+                              name="back"
+                              value={`/admin/employees/${employee.id}`}
+                            />
+                            <span className="w-20 text-xs text-slate-600">{stepLabel(s)}</span>
+                            <input
+                              name="reason"
+                              required
+                              maxLength={300}
+                              placeholder="건너뛰는 사유 (예: 퇴사)"
+                              className="w-48 rounded-md border border-slate-300 px-2 py-1 text-xs focus:border-slate-500 focus:outline-none"
+                            />
+                            <button
+                              type="submit"
+                              className="rounded-md border border-amber-300 px-2.5 py-1 text-xs text-amber-800 hover:bg-amber-50"
+                            >
+                              건너뛰기
+                            </button>
+                          </ActionForm>
+                        ))}
+                    </div>
+                  </div>
                 )}
               </li>
             ))}

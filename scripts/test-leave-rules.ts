@@ -5,22 +5,28 @@
  */
 import assert from "node:assert/strict";
 
+import { PgDialect } from "drizzle-orm/pg-core";
+
 import { addMonths, fullMonths, calendarWeeks } from "../src/lib/dates";
 import { japanHolidays } from "../src/lib/jp-holidays";
+import { isMyStep, myStepCondition } from "../src/lib/leave/approval-scope";
 import {
   allocate,
   anniversaryIn,
   annualEntitlement,
+  approversAfter,
   balanceOn,
   computeLeaveDays,
   expandLeaveDays,
   leaveYearOf,
   leaveYearWindow,
+  liveApprovers,
   monthlyAccruedOn,
   monthlyInfo,
   shortageIfAdded,
   spansOverlap,
   type LedgerInput,
+  type RouteMember,
 } from "../src/lib/leave/rules";
 
 const rules = [
@@ -252,4 +258,140 @@ check("일본 휴일 2027: 춘분 3/21 일요일 → 3/22 대체휴일", () => {
   ]);
 });
 
+/* ------------------------------------------------------------------ */
+/* 결재선 — 순서 있는 사람 목록 하나 (2026-09-21: 직급 → 사람)            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 🔴 이 규칙은 data.ts 의 `approvalChainFor` 와 **한 쌍**이다. 저쪽은 DB 에서
+ * 목록을 읽어 여기 `approversAfter` 에 그대로 먹인다 — 규칙은 한 곳뿐이다.
+ * 설정 화면의 「누가 신청하면 누가 결재하나」 표도 같은 함수를 부른다.
+ */
+const 사람 = (
+  stepNo: number,
+  name: string,
+  rankName: string,
+  opts: { active?: boolean; canApprove?: boolean } = {},
+): RouteMember => ({
+  routeStepId: `rs${stepNo}`,
+  stepNo,
+  employeeId: `e-${name}`,
+  name,
+  rankId: `r-${rankName}`,
+  rankName,
+  rankCanApprove: opts.canApprove ?? true,
+  active: opts.active ?? true,
+});
+
+const 김대리 = 사람(1, "김대리", "대리", { canApprove: false });
+const 박과장 = 사람(2, "박과장", "과장");
+const 이부장 = 사람(3, "이부장", "부장");
+const 최대표 = 사람(4, "최대표", "대표");
+const 결재선 = [김대리, 박과장, 이부장, 최대표];
+const 이름 = (chain: RouteMember[]) => chain.map((m) => m.name);
+
+check("결재선: 결재선에 없는 사람이 신청하면 전원에게 간다", () => {
+  assert.deepEqual(이름(approversAfter(결재선, "e-한사원")), [
+    "김대리",
+    "박과장",
+    "이부장",
+    "최대표",
+  ]);
+});
+
+check("결재선: 결재선 안에 있으면 자기 뒤 사람들에게만 간다", () => {
+  assert.deepEqual(이름(approversAfter(결재선, 박과장.employeeId)), ["이부장", "최대표"]);
+  assert.deepEqual(이름(approversAfter(결재선, 김대리.employeeId)), [
+    "박과장",
+    "이부장",
+    "최대표",
+  ]);
+});
+
+check("🔴 결재선: 맨 끝 사람이 신청하면 결재자가 0명 = 바로 확정", () => {
+  assert.deepEqual(approversAfter(결재선, 최대표.employeeId), []);
+});
+
+check("🔴 결재선: 결재선이 비어 있으면 누가 신청하든 결재 없이 바로 등록", () => {
+  // 「없음 (바로 등록)」으로 가는 길을 막지 않는다 — 절차를 끄는 유일한 출구다.
+  assert.deepEqual(approversAfter([], "e-누구"), []);
+  assert.deepEqual(approversAfter([], null), []);
+});
+
+check("🔴 결재선: 퇴사자는 줄에 남기되 실제 결재에서는 빠진다", () => {
+  const 퇴사한부장 = { ...이부장, active: false };
+  const chain = approversAfter([김대리, 박과장, 퇴사한부장, 최대표], 박과장.employeeId);
+  // 조용히 지우지 않는다 — 왜 빠지는지 화면이 말할 수 있어야 한다
+  assert.deepEqual(이름(chain), ["이부장", "최대표"]);
+  assert.deepEqual(이름(liveApprovers(chain)), ["최대표"]);
+});
+
+check("🔴 결재선: 뒷사람이 모두 퇴사했으면 결재 없이 바로 등록된다", () => {
+  const chain = approversAfter([박과장, { ...이부장, active: false }], 박과장.employeeId);
+  assert.equal(chain.length, 1);
+  assert.deepEqual(liveApprovers(chain), []);
+});
+
+check("결재선: 차례(stepNo)가 뒤죽박죽으로 와도 순서대로 셈한다", () => {
+  const 뒤섞음 = [최대표, 김대리, 이부장, 박과장];
+  assert.deepEqual(이름(approversAfter(뒤섞음, 김대리.employeeId)), [
+    "박과장",
+    "이부장",
+    "최대표",
+  ]);
+  // 넘겨받은 배열을 뒤집어 놓지 않는다 (부르는 쪽이 같은 배열을 다시 쓴다)
+  assert.deepEqual(이름(뒤섞음), ["최대표", "김대리", "이부장", "박과장"]);
+});
+
+check("결재선: 직급에 결재권이 없는 사람도 결재선에 들어간다 (사람으로 정한다)", () => {
+  // 김대리의 직급에는 결재권이 없지만, 결재선에 이름이 올랐으므로 결재자다.
+  const chain = liveApprovers(approversAfter(결재선, "e-한사원"));
+  assert.equal(chain[0].name, "김대리");
+  assert.equal(chain[0].rankCanApprove, false);
+});
+
+/* ------------------------------------------------------------------ */
+/* 「이 결재 단계가 내 것인가」 — 값과 SQL 이 같은 말을 해야 한다            */
+/* ------------------------------------------------------------------ */
+
+const 나 = { employeeId: "e-박과장", rankId: "r-과장", isApprover: true };
+const 결재권없는나 = { employeeId: "e-김대리", rankId: "r-대리", isApprover: false };
+
+check("결재 권한: 사람이 박힌 단계는 그 사람만 (직급은 보지 않는다)", () => {
+  assert.equal(isMyStep({ approverEmployeeId: "e-박과장", rankId: "r-부장" }, 나), true);
+  assert.equal(isMyStep({ approverEmployeeId: "e-이부장", rankId: "r-과장" }, 나), false);
+});
+
+check("결재 권한: 직급에 결재권이 없어도 내 이름이 박힌 단계는 내 것이다", () => {
+  assert.equal(
+    isMyStep({ approverEmployeeId: "e-김대리", rankId: "r-대리" }, 결재권없는나),
+    true,
+  );
+  assert.equal(isMyStep({ approverEmployeeId: null, rankId: "r-대리" }, 결재권없는나), false);
+});
+
+check("🔴 전환: 사람 칸이 빈 옛 단계는 예전처럼 직급으로 판정한다", () => {
+  // 사람 기반으로 바뀌기 전에 만들어져 **대기 중이던** 신청이다.
+  // 이 줄이 없으면 그 신청이 모든 결재함에서 조용히 사라진다.
+  assert.equal(isMyStep({ approverEmployeeId: null, rankId: "r-과장" }, 나), true);
+  assert.equal(isMyStep({ approverEmployeeId: null, rankId: "r-부장" }, 나), false);
+});
+
+check("🔴 전환: 결재함 질의의 SQL 에도 옛 단계(사람 칸이 빈 것) 갈래가 있다", () => {
+  // 값으로 답하는 isMyStep 과 결재함을 거르는 SQL 이 어긋나면, 목록에는
+  // 보이는데 누르면 막히거나 그 반대가 된다. SQL 을 직접 들여다본다.
+  const { sql: text, params } = new PgDialect().sqlToQuery(myStepCondition(나));
+  assert.match(text, /"approver_employee_id" = \$1/);
+  assert.match(text, /"approver_employee_id" is null and .*"rank_id" = \$2/);
+  assert.deepEqual(params, ["e-박과장", "r-과장"]);
+});
+
+check("결재함 질의: 직급에 결재권이 없으면 내 이름이 박힌 단계만 본다", () => {
+  const { sql: text, params } = new PgDialect().sqlToQuery(myStepCondition(결재권없는나));
+  assert.match(text, /"approver_employee_id" = \$1/);
+  assert.equal(/rank_id/.test(text), false);
+  assert.deepEqual(params, ["e-김대리"]);
+});
+
 console.log(`\n${passed}개 통과`);
+

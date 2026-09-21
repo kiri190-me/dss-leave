@@ -4,19 +4,20 @@
  * 휴가 관리자 전용 액션. 모든 함수가 맨 먼저 requireAdmin() 을 부른다.
  * 삭제는 전부 소프트 삭제다.
  */
-import { and, eq, gte, inArray, lte, ne, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, lte, ne, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 
 import type { ActionState } from "@/lib/action-state";
 import { writeAudit } from "@/lib/audit";
 import { requireAdmin, type Viewer } from "@/lib/auth/guards";
 import { isYmd } from "@/lib/dates";
-import { db } from "@/lib/db";
+import { db, type Tx } from "@/lib/db";
 import { isUuid } from "@/lib/ids";
 import {
   ADJUSTMENT_BUCKETS,
   HOLIDAY_KINDS,
   USER_ROLES,
+  webApprovalRouteSteps,
   webEmployees,
   webHolidays,
   webLeaveAdjustments,
@@ -460,6 +461,173 @@ export async function deleteRankAction(
     entityId: id,
   });
   return done("직급을 지웠습니다.");
+}
+
+/* ------------------------------------------------------------------ */
+/* 결재선 — 순서 있는 사람 목록 하나 (2026-09-21: 직급 → 사람)            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 지금 살아 있는 결재선 줄. 차례대로.
+ *
+ * 🔴 `step_no` 에 유일 색인을 걸지 않았다. 순서를 바꾸려면 두 줄의 번호를
+ * 맞바꿔야 하는데, 유일 색인이 있으면 그 중간 상태에서 걸려 넘어진다
+ * (Postgres 의 유일 **색인**은 문장마다 검사하고 미룰 수 없다). 대신 줄을
+ * 넣거나 빼거나 옮길 때마다 한 트랜잭션 안에서 1..n 으로 다시 번호를 매긴다.
+ */
+async function liveRouteSteps(q: typeof db | Tx = db) {
+  return q
+    .select()
+    .from(webApprovalRouteSteps)
+    .where(eq(webApprovalRouteSteps.isDeleted, false))
+    .orderBy(asc(webApprovalRouteSteps.stepNo), asc(webApprovalRouteSteps.createdAt));
+}
+
+/** 남은 줄에 1..n 을 다시 매긴다. 부르는 쪽이 원하는 차례로 정렬해 넘긴다 */
+async function renumberRoute(tx: Tx, ordered: { id: string; stepNo: number }[]): Promise<void> {
+  for (const [index, row] of ordered.entries()) {
+    const stepNo = index + 1;
+    if (row.stepNo === stepNo) continue;
+    await tx
+      .update(webApprovalRouteSteps)
+      .set({ stepNo, updatedAt: new Date() })
+      .where(eq(webApprovalRouteSteps.id, row.id));
+  }
+}
+
+/** 감사 로그에 남길 「지금 결재선」 한 줄 */
+async function routeSummary(tx: Tx): Promise<string> {
+  const rows = await tx
+    .select({ name: webEmployees.name, stepNo: webApprovalRouteSteps.stepNo })
+    .from(webApprovalRouteSteps)
+    .innerJoin(webEmployees, eq(webEmployees.id, webApprovalRouteSteps.approverEmployeeId))
+    .where(eq(webApprovalRouteSteps.isDeleted, false))
+    .orderBy(asc(webApprovalRouteSteps.stepNo));
+  return rows.length === 0 ? "(없음 — 결재 없이 바로 등록)" : rows.map((r) => r.name).join(" → ");
+}
+
+export async function addRouteStepAction(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const admin = await requireAdmin();
+  const employeeId = formId(formData, "employeeId");
+  const [emp] = await db
+    .select()
+    .from(webEmployees)
+    .where(
+      and(
+        eq(webEmployees.id, employeeId),
+        eq(webEmployees.isDeleted, false),
+        eq(webEmployees.isActive, true),
+      ),
+    )
+    .limit(1);
+  if (!emp) return { error: "결재선에 넣을 사람을 골라 주세요." };
+
+  const summary = await db.transaction(async (tx) => {
+    const rows = await liveRouteSteps(tx);
+    if (rows.some((r) => r.approverEmployeeId === employeeId)) return null;
+    await tx.insert(webApprovalRouteSteps).values({
+      approverEmployeeId: employeeId,
+      stepNo: rows.length + 1,
+    });
+    return routeSummary(tx);
+  });
+  if (summary === null) return { error: `${emp.name} 님은 이미 결재선에 있습니다.` };
+
+  await writeAudit({
+    actor: admin.user,
+    action: "APPROVAL_ROUTE_UPDATE",
+    summary: `결재선에 ${emp.name} 추가 → ${summary}`,
+    entityType: "approval_route",
+  });
+  return done(`${emp.name} 님을 결재선 맨 뒤에 넣었습니다.`);
+}
+
+export async function removeRouteStepAction(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const admin = await requireAdmin();
+  const id = formId(formData, "id");
+
+  const result = await db.transaction(async (tx) => {
+    const rows = await liveRouteSteps(tx);
+    const target = rows.find((r) => r.id === id);
+    if (!target) return null;
+    await tx
+      .update(webApprovalRouteSteps)
+      .set(softDeleteBy(admin, "결재선에서 뺌"))
+      .where(eq(webApprovalRouteSteps.id, id));
+    await renumberRoute(
+      tx,
+      rows.filter((r) => r.id !== id),
+    );
+    const [emp] = await tx
+      .select({ name: webEmployees.name })
+      .from(webEmployees)
+      .where(eq(webEmployees.id, target.approverEmployeeId));
+    return { name: emp?.name ?? "그 사람", summary: await routeSummary(tx) };
+  });
+  if (!result) return { error: "결재선에서 찾을 수 없습니다." };
+
+  await writeAudit({
+    actor: admin.user,
+    action: "APPROVAL_ROUTE_UPDATE",
+    summary: `결재선에서 ${result.name} 뺌 → ${result.summary}`,
+    entityType: "approval_route",
+  });
+  return done(
+    `${result.name} 님을 결재선에서 뺐습니다. 🔴 이미 결재 중인 신청의 결재자는 그대로입니다.`,
+  );
+}
+
+export async function moveRouteStepAction(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const admin = await requireAdmin();
+  const id = formId(formData, "id");
+  const dir = text(formData, "dir", 4);
+  if (dir !== "up" && dir !== "down") return { error: "옮길 방향을 알 수 없습니다." };
+
+  const summary = await db.transaction(async (tx) => {
+    const rows = await liveRouteSteps(tx);
+    const index = rows.findIndex((r) => r.id === id);
+    if (index === -1) return null;
+    const swapWith = dir === "up" ? index - 1 : index + 1;
+    if (swapWith < 0 || swapWith >= rows.length) return "EDGE" as const;
+
+    // 두 줄이 서로의 번호를 갖는다. 먼저 한 줄을 아무도 쓰지 않는 번호(0)로
+    // 비켜 두고 맞바꾼다 — 그래야 나중에 step_no 에 유일 색인을 걸어도 안전하다.
+    const me = rows[index];
+    const other = rows[swapWith];
+    const now = new Date();
+    await tx
+      .update(webApprovalRouteSteps)
+      .set({ stepNo: 0, updatedAt: now })
+      .where(eq(webApprovalRouteSteps.id, me.id));
+    await tx
+      .update(webApprovalRouteSteps)
+      .set({ stepNo: me.stepNo, updatedAt: now })
+      .where(eq(webApprovalRouteSteps.id, other.id));
+    await tx
+      .update(webApprovalRouteSteps)
+      .set({ stepNo: other.stepNo, updatedAt: now })
+      .where(eq(webApprovalRouteSteps.id, me.id));
+    return routeSummary(tx);
+  });
+  if (summary === null) return { error: "결재선에서 찾을 수 없습니다." };
+  if (summary === "EDGE") return { ok: "더 옮길 곳이 없습니다." };
+
+  await writeAudit({
+    actor: admin.user,
+    action: "APPROVAL_ROUTE_UPDATE",
+    summary: `결재선 순서 변경 → ${summary}`,
+    entityType: "approval_route",
+  });
+  return done("결재선 순서를 바꿨습니다.");
 }
 
 /* ------------------------------------------------------------------ */

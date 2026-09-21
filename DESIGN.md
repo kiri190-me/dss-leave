@@ -18,7 +18,7 @@
 ┌───────────────────────────────────────────────────────────────┐
 │ /  달력 (첫 화면)                                               │
 │   이번 달 달력: 날짜별 "이름 종류" (결재 대기는 흐린 점선), 빨간날    │
-│   오른쪽: [+ 휴가 신청] · 결재 대기 N건(결재권자) · 날짜 상세 · 내 남은 휴가 │
+│   오른쪽: [+ 휴가 신청] · 결재 대기 N건(결재자) · 날짜 상세 · 내 남은 휴가 │
 └──┬──────────────┬──────────────┬───────────────┬──────────────┘
    │              │              │               │ (휴가 관리자만)
    ▼              ▼              ▼               ▼
@@ -41,14 +41,15 @@
 
 | 테이블 | 하는 일 | 주요 컬럼 |
 |---|---|---|
-| `web_ranks` | 직급과 결재권 | name, sort_order(클수록 높음), can_approve |
+| `web_ranks` | 직급 (표시 순서 · 사유 열람 권한) | name, sort_order(클수록 높음), can_approve |
 | `web_employees` | 직원 명단 (휴가 관리 대상) | name, rank_id, hire_date, is_active(재직) |
 | `web_users` | 로그인 계정 | auth_sub(UNIQUE, dss-auth sub), display_name, email, role, employee_id(명단 연결) |
 | `web_sessions` | 이 사이트 세션 | token_hash(sha256), expires_at, revoked_at |
 | `web_tenure_rules` | 근속 연차별 일수 | from_year, to_year, days |
 | `web_holidays` | 공휴일·회사 휴무일 | day, name, kind |
 | `web_leave_requests` | 휴가 신청 (중심) | employee_id, kind(NEW·CHANGE·CANCEL), target_request_id, leave_type, start/end_date, days, deducts, reason, status |
-| `web_approval_steps` | 결재 단계 | request_id, step_no, rank_id, status, decided_by…, comment |
+| `web_approval_route_steps` | **결재선** (순서 있는 사람 목록 하나) | step_no, approver_employee_id |
+| `web_approval_steps` | 결재 단계 (신청할 때 굳혀 박는다) | request_id, step_no, approver_employee_id, rank_id(그때 직급), status, decided_by…, comment |
 | `web_leave_adjustments` | 관리자 일수 조정 | employee_id, bucket(ANNUAL·MONTHLY), year, days(±), reason |
 | `web_audit_logs` | 감사 로그 (append-only) | actor, action, summary, changes |
 
@@ -61,7 +62,7 @@
 ### 신청 상태
 
 ```
-NEW    : PENDING ─결재권자 모두 승인─▶ APPROVED ─(CHANGE 승인)─▶ SUPERSEDED
+NEW    : PENDING ─결재자 모두 승인──▶ APPROVED ─(CHANGE 승인)─▶ SUPERSEDED
                  ─누구든 반려──────▶ REJECTED               ─(CANCEL 승인·관리자 정정)─▶ CANCELED
                  ─신청자 거둬들임──▶ WITHDRAWN
 CHANGE : 원래 휴가를 가리키는 새 신청. 승인되면 원래 휴가는 SUPERSEDED, 이 신청이 새 휴가가 된다
@@ -70,14 +71,28 @@ CANCEL : 원래 휴가를 가리키는 취소 신청. 승인되면 원래 휴가
 
 결재가 끝난 휴가는 행을 고치지 않는다. 그래서 "누가 언제 무엇을 바꿨나"가 신청 기록에 그대로 남는다.
 
-### 결재 (순서 없음 — 2026-09-18 변경)
+### 결재 (순서 없음 — 2026-09-18 · 결재선을 사람으로 — 2026-09-21)
 
-결재권자 = 신청자보다 **높은 직급 중 결재권이 있는 직급**. 그 직급에 재직 중인 사람이 없으면 빠진다.
-신청하면 결재권자 수만큼 단계를 만들고 **모두 동시에 대기(PENDING)**. 누가 먼저 승인해도 되고,
+결재선은 **순서 있는 사람 목록 하나**다(`web_approval_route_steps`). 신청자가 그 목록 안에 있으면
+**자기 뒤 사람들**, 목록에 없으면 **전원**이 결재자다 (`rules.ts` 의 `approversAfter`).
+맨 끝 사람의 신청은 결재자가 0명이라 바로 확정되고, 결재선이 비어 있으면 모든 신청이 바로 확정된다.
+신청 시점에 퇴사·삭제된 사람은 단계를 아예 만들지 않는다 (설정 화면은 그 줄에 「건너뜁니다」라고 적는다).
+
+신청하면 결재자 수만큼 단계를 만들고 **모두 동시에 대기(PENDING)**. 누가 먼저 승인해도 되고,
 남은 대기가 없어지면 확정한다. 한 명이라도 반려하면 신청은 반려, 나머지 대기는 SKIPPED.
-단계는 사람이 아니라 직급에 걸리므로 같은 직급이 둘이면 누구든 결재할 수 있다. 위에 아무도 없으면(대표) 바로 승인.
 두 사람이 동시에 마지막 승인을 눌러도 신청 행을 잠그고 남은 대기를 세므로 한 번만 확정된다 (test:workflow 로 확인).
-`step_no` 는 화면 표시 순서(낮은 직급부터)일 뿐이다. `WAITING` 상태는 순서가 있던 초안의 흔적이라 새로 만들지 않는다.
+`step_no` 는 화면 표시 순서일 뿐이고, `WAITING` 상태는 순서가 있던 초안의 흔적이라 새로 만들지 않는다.
+
+🔴 **결재선은 신청하는 순간 단계 행으로 굳혀 박는다.** 뒤에 설정을 바꿔도 이미 결재 중인 신청의
+결재자는 그대로다. 그리고 **사람 칸(`approver_employee_id`)이 빈 옛 단계는 예전처럼 직급으로
+판정한다** — 이 한 줄이 없으면 전환 순간 대기 중이던 신청이 모든 결재함에서 사라진다.
+판정은 `lib/leave/approval-scope.ts` 한 곳에 있고, 결재함 SQL 과 `decideStep` 이 그것을 함께 쓴다.
+
+결재자가 퇴사해 막히면 휴가 관리자가 **[건너뛰기]**(직원 관리 → 휴가 기록)로 그 단계만 건너뛴다.
+승인이 아니라 SKIPPED 이고 감사 로그(`APPROVAL_SKIP`)에 남는다.
+
+`web_ranks.can_approve` 는 이제 결재선을 정하지 않는다 — **휴가 사유 열람**(`canSeeReason`)과
+머리말의 「결재함」 메뉴에만 쓰인다.
 
 ## 3. 계산 방식 (`src/lib/leave/rules.ts`)
 
@@ -106,7 +121,7 @@ CANCEL : 원래 휴가를 가리키는 취소 신청. 승인되면 원래 휴가
 | 1-1 | 대신 **연차 연도가 사람마다 다르다** | 화면·인쇄물에 연도 번호와 기간(`2026-03-15 ~ 2027-03-14`)을 함께 보여준다. `rules.ts` 의 `leaveYearOf`·`leaveYearWindow` 가 기준. 2027-01-01 전환 때 잔여 이관은 REQUIREMENTS 9-13 |
 | 2 | 근속 표를 바꾸면 지난 해 숫자도 다시 계산된다 | 그대로 둔다. 해마다 확정(스냅샷)할지 결정 필요 |
 | 3 | 개근 여부를 알 수 없다 (출퇴근 기록 없음) | 월차는 매달 자동. 결근은 관리자가 -1 조정 |
-| 4 | 결재권자가 오래 자리를 비우면 결재가 멈춘다 | 2차 후보 (대신 결재) |
+| 4 | 결재자가 오래 자리를 비우면 결재가 멈춘다 | 휴가 관리자의 **[건너뛰기]** 로 푼다(2026-09-21). `대신 결재`는 2차 후보 |
 | 5 | 결재 요청 알림이 사이트 안에만 있다 | 1차 범위대로. 이메일은 2차 후보 |
 
 ## 5. 로그인 연결 자리 (다른 직원 작업)

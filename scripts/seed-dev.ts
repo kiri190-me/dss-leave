@@ -132,8 +132,17 @@ async function main() {
       .returning();
     const userOf = (name: string) => users.find((u) => u.displayName === name)!;
 
-    const approverRanks = ranks.filter((r) => r.canApprove).sort((a, b) => a.sortOrder - b.sortOrder);
-    const whoHolds = (rankId: string) => employees.find((e) => e.rankId === rankId)!;
+    /**
+     * 결재선 — **순서 있는 사람 목록 하나**다 (2026-09-21: 직급 → 사람).
+     * 정민재(과장) → 최동욱(부장) → 윤성호(대표) 로 두면 예전 직급 규칙과
+     * 결과가 같다: 사원·대리는 셋 모두에게, 과장은 뒤의 둘에게, 부장은 대표
+     * 한 명에게, 대표는 결재 없이.
+     */
+    const routePeople = ["정민재", "최동욱", "윤성호"].map((name) => emp(name));
+    await tx.insert(s.webApprovalRouteSteps).values(
+      routePeople.map((e, i) => ({ approverEmployeeId: e.id, stepNo: i + 1 })),
+    );
+    const rankNameOf = (rankId: string) => ranks.find((r) => r.id === rankId)!.name;
 
     async function leave(
       name: string,
@@ -144,8 +153,9 @@ async function main() {
       outcome: Outcome,
     ) {
       const e = emp(name);
-      const myOrder = ranks.find((r) => r.id === e.rankId)!.sortOrder;
-      const chain = approverRanks.filter((r) => r.sortOrder > myOrder);
+      // 결재선 안에 있으면 자기 뒤 사람들, 없으면 전원 (rules.ts 의 approversAfter)
+      const index = routePeople.findIndex((p) => p.id === e.id);
+      const chain = index === -1 ? routePeople : routePeople.slice(index + 1);
       const computed = computeLeaveDays(leaveType, startDate, endDate, holidaySet);
       if (!computed.ok) throw new Error(`${name} ${startDate}: ${computed.error}`);
 
@@ -174,22 +184,26 @@ async function main() {
 
       if (chain.length === 0) return;
       await tx.insert(s.webApprovalSteps).values(
-        chain.map((r, i) => {
+        chain.map((approver, i) => {
           const stepNo = i + 1;
+          // 이 가짜 데이터의 outcome 은 직급 이름으로 적혀 있다 (결재선의 세
+          // 사람이 직급이 서로 달라 사람을 가리키는 것과 같다).
+          const rankName = rankNameOf(approver.rankId);
           let stepStatus: (typeof s.STEP_STATUSES)[number];
           if (outcome.status === "APPROVED") stepStatus = "APPROVED";
-          else if ((outcome.approved ?? []).includes(r.name)) stepStatus = "APPROVED";
-          else if (outcome.status === "REJECTED") stepStatus = outcome.by === r.name ? "REJECTED" : "SKIPPED";
+          else if ((outcome.approved ?? []).includes(rankName)) stepStatus = "APPROVED";
+          else if (outcome.status === "REJECTED")
+            stepStatus = outcome.by === rankName ? "REJECTED" : "SKIPPED";
           else stepStatus = "PENDING";
           const decided = stepStatus === "APPROVED" || stepStatus === "REJECTED";
-          const decider = whoHolds(r.id);
           return {
             requestId: req.id,
             stepNo,
-            rankId: r.id,
+            rankId: approver.rankId,
+            approverEmployeeId: approver.id,
             status: stepStatus,
-            decidedByEmployeeId: decided ? decider.id : null,
-            decidedByUserId: decided ? userOf(decider.name).id : null,
+            decidedByEmployeeId: decided ? approver.id : null,
+            decidedByUserId: decided ? userOf(approver.name).id : null,
             comment: stepStatus === "REJECTED" && outcome.status === "REJECTED" ? outcome.comment : null,
             decidedAt: decided ? decidedAt : null,
           };

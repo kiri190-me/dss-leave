@@ -11,6 +11,8 @@ const MESSAGES: Record<string, string> = {
   finished: "승인했습니다. 결재권자가 모두 승인해 확정되었습니다.",
   rejected: "반려했습니다. 신청자에게 반려 사유가 보입니다.",
   "admin-canceled": "휴가를 취소 처리했습니다.",
+  "step-skipped": "그 결재 단계를 건너뛰었습니다. 남은 결재자의 승인을 기다립니다.",
+  "step-skipped-finished": "그 결재 단계를 건너뛰었습니다. 남은 결재가 없어 확정되었습니다.",
 };
 
 export function DoneBanner({ code, className = "" }: { code: string | string[] | undefined; className?: string }) {

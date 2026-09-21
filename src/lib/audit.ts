@@ -15,6 +15,10 @@ export type AuditAction =
   | "LEAVE_CANCEL_REQUEST"
   | "APPROVAL_APPROVE"
   | "APPROVAL_REJECT"
+  /** 관리자가 막힌 단계를 건너뜀 (결재자 퇴사 등). 승인이 아니다 */
+  | "APPROVAL_SKIP"
+  /** 결재선(사람 순서 목록)을 고침 */
+  | "APPROVAL_ROUTE_UPDATE"
   | "LEAVE_ADMIN_CANCEL"
   | "EMPLOYEE_CREATE"
   | "EMPLOYEE_UPDATE"

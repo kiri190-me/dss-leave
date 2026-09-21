@@ -512,3 +512,70 @@ export function spansOverlap(a: Span, b: Span): boolean {
   }
   return true;
 }
+
+/* ------------------------------------------------------------------ */
+/* 결재선 — 「누가 결재하는가」                                           */
+/* 🔴 2026-09-21: 직급이 아니라 **사람**이다 (사용자 결정)                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 결재선 한 자리에 앉은 사람.
+ *
+ * 결재선은 **순서가 있는 사람 목록 하나**다 (web_approval_route_steps).
+ * 신청자 직급별로 다른 결재선을 두지 않는다 — 판이 하나뿐이라 이 목록이 전부다.
+ */
+export type RouteMember = {
+  /** 결재선 줄의 id (web_approval_route_steps.id). 화면의 [▲][▼][빼기]가 쓴다 */
+  routeStepId: string;
+  /** 목록에서의 차례. 1부터. 「자신 이후」를 가르는 기준이다 */
+  stepNo: number;
+  employeeId: string;
+  name: string;
+  /**
+   * 신청 시점의 직급. 결재 단계(web_approval_steps.rank_id)에 함께 적어 둔다 —
+   * 표시용이고, 권한 판정에는 쓰지 않는다 (사람으로 판정한다).
+   */
+  rankId: string;
+  rankName: string;
+  /** 재직 중인가 (퇴사·삭제가 아닌가). false 면 결재 단계를 **아예 만들지 않는다** */
+  active: boolean;
+  /** 이 사람의 직급에 결재권(can_approve)이 있는가. 화면이 사실대로 말하는 데만 쓴다 */
+  rankCanApprove: boolean;
+};
+
+/**
+ * 「이 사람이 신청하면 누가 결재하는가」를 값으로만 답한다.
+ *
+ * 사용자 설계(2026-09-21) 그대로다:
+ * - 신청자가 결재선 **안에 있으면 자기 뒤에 있는 사람들**에게만 받는다.
+ *   맨 끝 사람이 신청하면 뒤가 없으므로 **결재자가 0명** = 바로 확정.
+ * - 신청자가 결재선에 **없으면 목록 전원**에게 받는다.
+ *
+ * 🔴 data.ts 의 `approvalChainFor` 와 **같은 규칙**이다 — 저쪽은 이 함수에
+ * DB 에서 읽은 목록을 먹인다. 규칙을 바꾸면 `npm run test:leave` 의 예시도
+ * 함께 고친다.
+ *
+ * 🔴 **퇴사자도 지우지 않고 돌려준다**(`active: false`). 조용히 빼면 절차가
+ * 원래 짧았던 것처럼 보이고 「왜 결재가 안 가지」를 아무도 답할 수 없다.
+ * 줄은 그대로 두고 왜 빠지는지를 그 자리에 적는 것이 화면의 몫이다.
+ * 실제로 단계를 만들 때만 `liveApprovers` 로 거른다.
+ *
+ * 넘겨받은 배열을 뒤집어 놓지 않는다 (부르는 쪽이 같은 배열을 다시 쓴다).
+ */
+export function approversAfter(
+  route: readonly RouteMember[],
+  applicantEmployeeId: string | null,
+): RouteMember[] {
+  const ordered = [...route].sort((a, b) => a.stepNo - b.stepNo);
+  const index = ordered.findIndex((m) => m.employeeId === applicantEmployeeId);
+  return index === -1 ? ordered : ordered.slice(index + 1);
+}
+
+/**
+ * 실제로 결재가 가는 사람만. 비어 있으면 그 신청은 결재 없이 바로 등록된다.
+ * 🔴 0명이 되는 길을 막지 않는다 — 결재선이 비었을 때도, 맨 끝 사람이 신청할
+ * 때도, 뒷사람이 모두 퇴사했을 때도 0명이고, 셋 다 바로 확정이 옳다.
+ */
+export function liveApprovers(chain: readonly RouteMember[]): RouteMember[] {
+  return chain.filter((m) => m.active);
+}

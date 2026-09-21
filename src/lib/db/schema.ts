@@ -20,7 +20,11 @@ import {
 /* DB 에는 영문 코드를 저장하고, 화면 글자는 src/lib/leave/labels.ts 에서 */
 /* ------------------------------------------------------------------ */
 
-/** 이 사이트 안에서의 역할. 결재권은 역할이 아니라 직급(web_ranks)으로 정해진다. */
+/**
+ * 이 사이트 안에서의 역할.
+ * 누가 결재하는지는 역할도 직급도 아닌 **결재선**(web_approval_route_steps)이
+ * 정한다 (2026-09-21 변경).
+ */
 export const USER_ROLES = [
   "MEMBER", // 직원 — 신청·달력·내 휴가
   "LEAVE_ADMIN", // 휴가 관리자 — 직원 명단·입사일·근속 표·공휴일·일수 조정
@@ -114,7 +118,7 @@ const days = (name: string) =>
   numeric(name, { precision: 5, scale: 1, mode: "number" });
 
 /* ------------------------------------------------------------------ */
-/* web_ranks — 직급. 누가 결재권자인지의 기준                            */
+/* web_ranks — 직급. 표시 순서와 '휴가 사유를 볼 수 있는 범위'            */
 /* ------------------------------------------------------------------ */
 
 export const webRanks = pgTable(
@@ -122,9 +126,14 @@ export const webRanks = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     name: text("name").notNull(),
-    /** 클수록 높은 직급. 신청자보다 높은 직급의 결재권자가 모두 승인해야 확정된다. */
+    /** 클수록 높은 직급. 목록을 늘어놓는 차례로 쓴다. */
     sortOrder: integer("sort_order").notNull(),
-    /** 결재권. 과장 이상 */
+    /**
+     * 🔴 2026-09-21 이후 이 칸은 **결재선을 정하지 않는다** (결재선은
+     * web_approval_route_steps 의 사람 목록이다). 남아서 하는 일은 둘이다:
+     * 휴가 사유를 볼 수 있는가(guards.ts 의 canSeeReason)와 머리말에
+     * 「결재함」 메뉴가 보이는가.
+     */
     canApprove: boolean("can_approve").notNull().default(false),
     ...timestamps,
     ...softDelete,
@@ -343,9 +352,54 @@ export const webLeaveRequests = pgTable(
 );
 
 /* ------------------------------------------------------------------ */
-/* web_approval_steps — 결재 단계 (신청 한 건에 결재권자 수만큼)        */
+/* web_approval_route_steps — 결재선 (순서 있는 사람 목록 하나)          */
+/* 2026-09-21: 결재권자를 직급이 아니라 **사람**으로 정한다 (사용자 결정) */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 회사에 **하나뿐인** 결재선이다. 신청자 직급별로 판을 나누지 않는다.
+ *
+ * 신청자가 이 목록 안에 있으면 **자기 뒤에 있는 사람들**에게만 결재를 받고,
+ * 목록에 없으면 **전원**에게 받는다. 맨 끝 사람의 신청은 결재자가 0명이므로
+ * 결재 없이 바로 확정된다 (rules.ts 의 approversAfter).
+ *
+ * 🔴 `step_no` 는 **누가 결재자가 되는가**를 가르는 차례일 뿐, 「한 명씩 차례로
+ * 기다린다」는 뜻이 아니다. 결재는 지금도 동시에 가고 순서 없이 모두 승인하면
+ * 확정된다.
+ *
+ * 🔴 `step_no` 에 유일 색인을 걸지 않았다 — 순서를 맞바꾸는 중간 상태에서
+ * 걸려 넘어진다(유일 색인은 문장마다 검사하고 미룰 수 없다). 대신 줄을 넣고
+ * 빼고 옮길 때마다 한 트랜잭션 안에서 1..n 으로 다시 번호를 매긴다
+ * (actions/admin.ts).
+ */
+export const webApprovalRouteSteps = pgTable(
+  "web_approval_route_steps",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    /** 목록에서의 차례. 1부터 */
+    stepNo: integer("step_no").notNull(),
+    approverEmployeeId: uuid("approver_employee_id")
+      .notNull()
+      .references(() => webEmployees.id),
+    ...timestamps,
+    ...softDelete,
+  },
+  (t) => [
+    /** 같은 사람이 결재선에 두 번 들어가지 않는다 */
+    uniqueIndex("web_approval_route_steps_employee_uq")
+      .on(t.approverEmployeeId)
+      .where(sql`${t.isDeleted} = false`),
+    index("web_approval_route_steps_alive_idx")
+      .on(t.stepNo)
+      .where(sql`${t.isDeleted} = false`),
+  ],
+);
+
+/* ------------------------------------------------------------------ */
+/* web_approval_steps — 결재 단계 (신청 한 건에 결재자 수만큼)          */
 /* 순서 없이 동시에 대기하고, 모두 승인하면 확정. step_no 는 표시 순서다  */
-/* 단계는 '사람'이 아니라 '직급'에 걸린다. 같은 직급이 둘이면 누구든 결재 */
+/* 단계는 **신청하는 순간 굳혀 박는다** — 뒤에 결재선을 바꿔도 이미 박힌  */
+/* 행은 건드리지 않는다 (대기 중인 신청의 결재자가 바뀌면 안 된다)       */
 /* ------------------------------------------------------------------ */
 
 export const webApprovalSteps = pgTable(
@@ -356,9 +410,23 @@ export const webApprovalSteps = pgTable(
       .notNull()
       .references(() => webLeaveRequests.id),
     stepNo: integer("step_no").notNull(),
+    /**
+     * 신청 시점 결재자의 직급. **표시용**이다.
+     * 🔴 `approver_employee_id` 가 null 인 **옛 행에서만** 권한 판정에 쓰인다
+     * (직급으로 결재하던 때에 만들어져 아직 대기 중인 단계). 그 한 줄이 없으면
+     * 전환 순간 대기 중이던 신청이 모든 결재함에서 사라진다
+     * (lib/leave/approval-scope.ts).
+     */
     rankId: uuid("rank_id")
       .notNull()
       .references(() => webRanks.id),
+    /**
+     * 이 단계를 결재할 **사람**. 2026-09-21 이후 만들어지는 단계에는 늘 있다.
+     * null 은 그 전에 만들어진 행뿐이라 칸을 더하기만 했다 (기존 행은 그대로).
+     */
+    approverEmployeeId: uuid("approver_employee_id").references(
+      () => webEmployees.id,
+    ),
     status: text("status", { enum: STEP_STATUSES })
       .notNull()
       .default("WAITING"),
@@ -373,6 +441,11 @@ export const webApprovalSteps = pgTable(
   },
   (t) => [
     uniqueIndex("web_approval_steps_request_step_uq").on(t.requestId, t.stepNo),
+    /** 결재함: 사람으로 찾는 길 (지금) */
+    index("web_approval_steps_pending_approver_idx")
+      .on(t.approverEmployeeId)
+      .where(sql`${t.isDeleted} = false and ${t.status} = 'PENDING'`),
+    /** 결재함: 직급으로 찾는 길 (사람 칸이 빈 옛 행) */
     index("web_approval_steps_pending_idx")
       .on(t.rankId)
       .where(sql`${t.isDeleted} = false and ${t.status} = 'PENDING'`),
@@ -449,5 +522,6 @@ export type WebUser = typeof webUsers.$inferSelect;
 export type TenureRule = typeof webTenureRules.$inferSelect;
 export type Holiday = typeof webHolidays.$inferSelect;
 export type LeaveRequest = typeof webLeaveRequests.$inferSelect;
+export type ApprovalRouteStep = typeof webApprovalRouteSteps.$inferSelect;
 export type ApprovalStep = typeof webApprovalSteps.$inferSelect;
 export type LeaveAdjustment = typeof webLeaveAdjustments.$inferSelect;

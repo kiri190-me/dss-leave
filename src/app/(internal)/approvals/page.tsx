@@ -2,7 +2,7 @@ import { decideAction } from "@/app/actions/leave";
 import { ActionForm } from "@/components/ActionForm";
 import { KindBadge, StatusBadge, StepTrail, TypeChip } from "@/components/badges";
 import { DoneBanner } from "@/components/DoneBanner";
-import { requireApprover } from "@/lib/auth/guards";
+import { requireMember } from "@/lib/auth/guards";
 import { formatRange } from "@/lib/dates";
 import {
   decidedBy,
@@ -13,13 +13,20 @@ import {
 } from "@/lib/leave/data";
 import { KIND_LABEL, formatDays } from "@/lib/leave/labels";
 
-/** 결재함: 내 승인을 기다리는 신청 + 내가 처리한 기록 */
+/**
+ * 결재함: 내 승인을 기다리는 신청 + 내가 처리한 기록.
+ *
+ * 🔴 문 앞에서 직급의 결재권(`requireApprover`)을 묻지 않는다 — 결재선에 이름이
+ * 오른 사람은 직급에 결재권이 없어도 자기 단계를 결재해야 하기 때문이다.
+ * 이 화면이 보여 주는 것은 **내 단계와 내가 처리한 기록뿐**이라(data.ts 의
+ * pendingForApprover · decidedBy) 결재할 것이 없는 사람에게는 빈 화면이 된다.
+ */
 export default async function ApprovalsPage({
   searchParams,
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const member = await requireApprover();
+  const member = await requireMember();
   const sp = await searchParams;
   const [items, history, holidays, rules] = await Promise.all([
     pendingForApprover(member),
@@ -47,7 +54,7 @@ export default async function ApprovalsPage({
         <h1 className="mb-1 text-xl font-semibold text-slate-900">결재함</h1>
         <DoneBanner code={sp.done} className="mb-4" />
         <p className="mb-4 text-sm text-slate-500">
-          내 승인을 기다리는 신청입니다. 결재권자가 순서 없이 모두 승인하면 확정되고, 한 명이라도 반려하면 그 자리에서 끝납니다.
+          내 승인을 기다리는 신청입니다. 결재선의 결재자가 순서 없이 모두 승인하면 확정되고, 한 명이라도 반려하면 그 자리에서 끝납니다.
         </p>
 
         {items.length === 0 ? (

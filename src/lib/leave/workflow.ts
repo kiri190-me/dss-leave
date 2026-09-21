@@ -18,11 +18,13 @@ import { isUuid } from "@/lib/ids";
 import {
   LEAVE_TYPES,
   webApprovalSteps,
+  webEmployees,
   webLeaveRequests,
   webRanks,
   type LeaveRequest,
   type LeaveType,
 } from "@/lib/db/schema";
+import { isMyStep } from "./approval-scope";
 import {
   approvalChainFor,
   liveSpansOf,
@@ -83,6 +85,27 @@ async function finalize(tx: Tx, req: LeaveRequest): Promise<void> {
   }
 }
 
+/**
+ * 아직 기다리고 있는 결재자의 이름. 사람으로 박힌 단계는 사람 이름,
+ * 전환 전에 만들어진 옛 단계는 직급 이름을 쓴다.
+ */
+async function remainingApprovers(tx: Tx, requestId: string): Promise<string[]> {
+  const rows = await tx
+    .select({ name: webEmployees.name, rankName: webRanks.name })
+    .from(webApprovalSteps)
+    .innerJoin(webRanks, eq(webRanks.id, webApprovalSteps.rankId))
+    .leftJoin(webEmployees, eq(webEmployees.id, webApprovalSteps.approverEmployeeId))
+    .where(
+      and(
+        eq(webApprovalSteps.requestId, requestId),
+        eq(webApprovalSteps.status, "PENDING"),
+        eq(webApprovalSteps.isDeleted, false),
+      ),
+    )
+    .orderBy(asc(webApprovalSteps.stepNo));
+  return rows.map((r) => r.name ?? r.rankName);
+}
+
 async function skipOpenSteps(tx: Tx, requestId: string): Promise<void> {
   await tx
     .update(webApprovalSteps)
@@ -95,7 +118,17 @@ async function skipOpenSteps(tx: Tx, requestId: string): Promise<void> {
     );
 }
 
-/** 신청 행과 결재 단계를 만든다. 결재 단계는 모두 동시에 대기. 결재할 사람이 없으면 바로 승인한다 */
+/**
+ * 신청 행과 결재 단계를 만든다. 결재 단계는 모두 동시에 대기.
+ * 결재할 사람이 없으면 바로 승인한다.
+ *
+ * 🔴 **결재선은 신청하는 이 순간 단계 행으로 굳혀 박는다.** 나중에 관리자가
+ * 설정의 결재선을 바꿔도 이미 박힌 행은 건드리지 않는다 — 대기 중인 신청의
+ * 결재자가 뒤에서 바뀌는 일이 없어야 한다.
+ *
+ * 단계에는 사람(`approverEmployeeId`)과 **그때 그 사람의 직급**(`rankId`)을
+ * 함께 적는다. 직급은 표시용·옛 행과의 호환용이고, 권한 판정은 사람으로 한다.
+ */
 async function createWithChain(
   tx: Tx,
   member: Member,
@@ -116,15 +149,16 @@ async function createWithChain(
     await finalize(tx, request);
   } else {
     await tx.insert(webApprovalSteps).values(
-      chain.map((rank, i) => ({
+      chain.map((approver, i) => ({
         requestId: request.id,
         stepNo: i + 1,
-        rankId: rank.id,
+        rankId: approver.rankId,
+        approverEmployeeId: approver.employeeId,
         status: "PENDING" as const,
       })),
     );
   }
-  return { request, chainNames: chain.map((r) => r.name) };
+  return { request, chainNames: chain.map((a) => a.name) };
 }
 
 function submittedMessage(chainNames: string[]): string {
@@ -387,7 +421,6 @@ export async function decideStep(
   const comment = commentRaw.trim().slice(0, 300) || null;
   if (!isUuid(stepId)) return fail("결재를 찾을 수 없습니다.");
   if (!approve && !comment) return fail("반려 사유를 적어 주세요.");
-  if (!member.isApprover) return fail("결재 권한이 없습니다.");
 
   const outcome = await db.transaction(async (tx) => {
     const [step] = await tx
@@ -400,8 +433,17 @@ export async function decideStep(
     const req = await lockRequest(tx, step.requestId);
     if (!req || req.status !== "PENDING") return { error: "이미 처리된 신청입니다." };
 
-    // 권한: 이 단계의 직급인 사람이어야 하고, 자기 신청은 결재할 수 없다
-    if (step.rankId !== member.employee.rankId || req.employeeId === member.employee.id) {
+    // 권한: 이 단계가 내 것이어야 하고, 자기 신청은 결재할 수 없다.
+    // 🔴 「내 것인가」는 approval-scope.ts 한 곳에서 답한다 — 결재함 목록을
+    // 거르는 SQL 과 같은 문장이라야 목록에는 보이는데 누르면 막히는 일이 없다.
+    // 직급 결재권(isApprover)을 문 앞에서 따로 묻지 않는다: 사람으로 박힌
+    // 단계는 그 사람의 것이고, 옛 단계는 저 판정 안에서 직급과 함께 본다.
+    const mine = isMyStep(step, {
+      employeeId: member.employee.id,
+      rankId: member.employee.rankId,
+      isApprover: member.isApprover,
+    });
+    if (!mine || req.employeeId === member.employee.id) {
       return { error: "이 결재를 처리할 권한이 없습니다." };
     }
 
@@ -421,24 +463,13 @@ export async function decideStep(
     let finished = false;
     let waitingFor: string[] = [];
     if (approve) {
-      // 아직 승인하지 않은 결재권자가 남았는가. 신청 행을 잠근 뒤라 동시에 승인해도 한 번만 확정된다
-      const remaining = await tx
-        .select({ rankName: webRanks.name })
-        .from(webApprovalSteps)
-        .innerJoin(webRanks, eq(webRanks.id, webApprovalSteps.rankId))
-        .where(
-          and(
-            eq(webApprovalSteps.requestId, req.id),
-            eq(webApprovalSteps.status, "PENDING"),
-            eq(webApprovalSteps.isDeleted, false),
-          ),
-        )
-        .orderBy(asc(webApprovalSteps.stepNo));
+      // 아직 승인하지 않은 결재자가 남았는가. 신청 행을 잠근 뒤라 동시에 승인해도 한 번만 확정된다
+      const remaining = await remainingApprovers(tx, req.id);
       if (remaining.length === 0) {
         await finalize(tx, req);
         finished = true;
       } else {
-        waitingFor = remaining.map((r) => r.rankName);
+        waitingFor = remaining;
       }
     } else {
       await tx
@@ -472,6 +503,91 @@ export async function decideStep(
       ? "승인했습니다. 모든 결재권자가 승인해 확정되었습니다."
       : `승인했습니다. ${outcome.waitingFor.join("·")}의 승인을 기다립니다.`,
     code: outcome.finished ? "finished" : "approved",
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* 관리자: 이 단계 건너뛰기                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 결재를 기다리는 동안 그 결재자가 퇴사했을 때, 휴가 관리자가 그 단계만
+ * 건너뛴다 (2026-09-21 사용자 결정).
+ *
+ * 🔴 **막힌 신청을 살리는 유일한 출구다.** 결재선이 직급이던 때에는 같은 직급의
+ * 다른 사람이 대신 결재할 수 있어 막히는 일이 없었는데, 사람으로 고정하면서
+ * 그 안전망이 사라졌다. 결재자가 퇴사하거나 오래 자리를 비우면 그 신청은
+ * 영영 대기 상태로 남는다.
+ *
+ * 승인이 아니다 — 단계 상태는 `SKIPPED` 이고, 누가 왜 건너뛰었는지 단계의
+ * 의견과 감사 로그에 남는다. 남은 대기가 없으면 그 자리에서 확정된다.
+ */
+export async function skipStep(
+  admin: Viewer,
+  stepId: string,
+  reasonRaw: string,
+): Promise<WorkflowResult> {
+  if (!admin.isAdmin) return fail("휴가 관리자만 단계를 건너뛸 수 있습니다.");
+  if (!isUuid(stepId)) return fail("결재를 찾을 수 없습니다.");
+  const reason = reasonRaw.trim().slice(0, 300);
+  if (!reason) return fail("건너뛰는 사유를 적어 주세요.");
+
+  const outcome = await db.transaction(async (tx) => {
+    const [step] = await tx
+      .select()
+      .from(webApprovalSteps)
+      .where(and(eq(webApprovalSteps.id, stepId), eq(webApprovalSteps.isDeleted, false)))
+      .for("update");
+    if (!step || step.status !== "PENDING") {
+      return { error: "이미 처리되었거나 없는 결재입니다." };
+    }
+
+    const req = await lockRequest(tx, step.requestId);
+    if (!req || req.status !== "PENDING") return { error: "이미 처리된 신청입니다." };
+
+    const [who] = await tx
+      .select({ name: webEmployees.name, rankName: webRanks.name })
+      .from(webApprovalSteps)
+      .innerJoin(webRanks, eq(webRanks.id, webApprovalSteps.rankId))
+      .leftJoin(webEmployees, eq(webEmployees.id, webApprovalSteps.approverEmployeeId))
+      .where(eq(webApprovalSteps.id, step.id));
+    const label = who?.name ?? who?.rankName ?? "결재자";
+
+    const now = new Date();
+    await tx
+      .update(webApprovalSteps)
+      .set({
+        status: "SKIPPED",
+        comment: `관리자 건너뛰기: ${reason}`,
+        decidedByUserId: admin.user.id,
+        decidedAt: now,
+        updatedAt: now,
+      })
+      .where(eq(webApprovalSteps.id, step.id));
+
+    const remaining = await remainingApprovers(tx, req.id);
+    if (remaining.length === 0) await finalize(tx, req);
+
+    await writeAudit(
+      {
+        actor: admin.user,
+        action: "APPROVAL_SKIP",
+        summary: `관리자 건너뛰기 — ${label} 단계: ${describe(req)} — ${reason}`,
+        entityType: "leave_request",
+        entityId: req.id,
+      },
+      tx,
+    );
+    return { finished: remaining.length === 0, waitingFor: remaining, label };
+  });
+
+  if ("error" in outcome) return fail(outcome.error ?? "처리하지 못했습니다.");
+  return {
+    ok: true,
+    message: outcome.finished
+      ? `${outcome.label} 단계를 건너뛰었습니다. 남은 결재가 없어 확정되었습니다.`
+      : `${outcome.label} 단계를 건너뛰었습니다. ${outcome.waitingFor.join("·")}의 승인을 기다립니다.`,
+    code: outcome.finished ? "step-skipped-finished" : "step-skipped",
   };
 }
 

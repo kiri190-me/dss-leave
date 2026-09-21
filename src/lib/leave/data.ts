@@ -1,7 +1,7 @@
 /**
  * 휴가 데이터 읽기. 계산 규칙은 rules.ts, 쓰기(신청·결재)는 workflow.ts 에 있다.
  */
-import { and, asc, desc, eq, gt, gte, inArray, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lte, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 
 import type { EmployeeWithRank, Viewer } from "@/lib/auth/guards";
@@ -10,6 +10,7 @@ import { todayKst } from "@/lib/dates";
 import { db, type Tx } from "@/lib/db";
 import { isUuid } from "@/lib/ids";
 import {
+  webApprovalRouteSteps,
   webApprovalSteps,
   webEmployees,
   webHolidays,
@@ -22,12 +23,16 @@ import {
   type LeaveRequest,
   type Rank,
 } from "@/lib/db/schema";
+import { myStepCondition, type Decider } from "./approval-scope";
 import {
+  approversAfter,
   balanceOn,
   expandLeaveDays,
+  liveApprovers,
   round1,
   type Balance,
   type LedgerInput,
+  type RouteMember,
   type TenureRuleRow,
 } from "./rules";
 
@@ -155,48 +160,76 @@ export async function getBalance(
 }
 
 /* ------------------------------------------------------------------ */
-/* 결재 순서                                                            */
+/* 결재선 — 순서 있는 사람 목록 하나 (2026-09-21: 직급 → 사람)            */
 /* ------------------------------------------------------------------ */
 
 /**
- * 결재권자: 신청자보다 높은 직급 중 결재권이 있는 직급 (표시는 낮은 직급부터).
- * 순서 없이 모두 승인해야 확정된다.
- * 그 직급에 재직 중인 사람이 없으면 건너뛴다.
- * 대표처럼 위에 아무도 없으면 빈 배열 → 결재 없이 바로 등록.
+ * 결재선 전체. 순서대로, **퇴사자도 지우지 않고** 돌려준다.
+ * 설정 화면은 이 목록을 그대로 그리고, 결재선 계산은 여기서 걸러 쓴다.
+ */
+export async function loadApprovalRoute(q: Q = db): Promise<RouteMember[]> {
+  const rows = await q
+    .select({
+      routeStepId: webApprovalRouteSteps.id,
+      stepNo: webApprovalRouteSteps.stepNo,
+      employeeId: webEmployees.id,
+      name: webEmployees.name,
+      rankId: webEmployees.rankId,
+      rankName: webRanks.name,
+      rankCanApprove: webRanks.canApprove,
+      isActive: webEmployees.isActive,
+      isDeleted: webEmployees.isDeleted,
+    })
+    .from(webApprovalRouteSteps)
+    .innerJoin(webEmployees, eq(webEmployees.id, webApprovalRouteSteps.approverEmployeeId))
+    .innerJoin(webRanks, eq(webRanks.id, webEmployees.rankId))
+    .where(eq(webApprovalRouteSteps.isDeleted, false))
+    .orderBy(asc(webApprovalRouteSteps.stepNo), asc(webApprovalRouteSteps.createdAt));
+
+  return rows.map((r) => ({
+    routeStepId: r.routeStepId,
+    stepNo: r.stepNo,
+    employeeId: r.employeeId,
+    name: r.name,
+    rankId: r.rankId,
+    rankName: r.rankName,
+    rankCanApprove: r.rankCanApprove,
+    active: r.isActive && !r.isDeleted,
+  }));
+}
+
+/**
+ * 이 사람이 지금 신청하면 **실제로 결재할 사람들**.
+ *
+ * 규칙은 `rules.ts` 의 `approversAfter` 한 곳에 있다 (여기는 DB 에서 목록을
+ * 읽어 먹이기만 한다): 결재선 안에 있으면 **자기 뒤 사람들**, 없으면 **전원**.
+ * 퇴사·삭제된 사람은 `liveApprovers` 가 뺀다 — 남는 사람이 없으면 빈 배열이고,
+ * 그것은 **결재 없이 바로 등록**을 뜻한다 (맨 끝 사람의 신청도 마찬가지다).
  */
 export async function approvalChainFor(
-  applicant: Pick<EmployeeWithRank, "id" | "rank">,
+  applicant: Pick<EmployeeWithRank, "id">,
   q: Q = db,
-): Promise<Rank[]> {
-  const ranks = await q
-    .select()
-    .from(webRanks)
-    .where(
-      and(
-        eq(webRanks.isDeleted, false),
-        eq(webRanks.canApprove, true),
-        gt(webRanks.sortOrder, applicant.rank.sortOrder),
-      ),
-    )
-    .orderBy(asc(webRanks.sortOrder));
-  if (ranks.length === 0) return [];
+): Promise<RouteMember[]> {
+  const route = await loadApprovalRoute(q);
+  return liveApprovers(approversAfter(route, applicant.id));
+}
 
-  const staffed = await q
-    .select({ rankId: webEmployees.rankId })
+/** 결재선에 넣을 수 있는 사람 — 재직 중인 직원 전부 (이미 든 사람은 화면이 뺀다) */
+export async function loadRouteCandidates(): Promise<
+  { id: string; name: string; rankName: string; rankCanApprove: boolean }[]
+> {
+  const rows = await db
+    .select({
+      id: webEmployees.id,
+      name: webEmployees.name,
+      rankName: webRanks.name,
+      rankCanApprove: webRanks.canApprove,
+    })
     .from(webEmployees)
-    .where(
-      and(
-        eq(webEmployees.isDeleted, false),
-        eq(webEmployees.isActive, true),
-        ne(webEmployees.id, applicant.id),
-        inArray(
-          webEmployees.rankId,
-          ranks.map((r) => r.id),
-        ),
-      ),
-    );
-  const staffedIds = new Set(staffed.map((s) => s.rankId));
-  return ranks.filter((r) => staffedIds.has(r.id));
+    .innerJoin(webRanks, eq(webRanks.id, webEmployees.rankId))
+    .where(and(eq(webEmployees.isDeleted, false), eq(webEmployees.isActive, true)))
+    .orderBy(desc(webRanks.sortOrder), asc(webEmployees.name));
+  return rows;
 }
 
 /* ------------------------------------------------------------------ */
@@ -205,6 +238,11 @@ export async function approvalChainFor(
 
 export type StepView = ApprovalStep & {
   rankName: string;
+  /**
+   * 이 단계를 맡은 사람. 사람으로 박힌 뒤로는 늘 있고, 전환 전에 만들어진
+   * 옛 단계(직급에 걸린 것)만 null 이다 — 그때는 화면이 직급을 보여 준다.
+   */
+  approverName: string | null;
   decidedByName: string | null;
 };
 
@@ -212,10 +250,17 @@ export async function stepsFor(requestIds: string[]): Promise<Map<string, StepVi
   const map = new Map<string, StepView[]>();
   if (requestIds.length === 0) return map;
   const decider = alias(webEmployees, "decider");
+  const approver = alias(webEmployees, "approver");
   const rows = await db
-    .select({ step: webApprovalSteps, rankName: webRanks.name, decidedByName: decider.name })
+    .select({
+      step: webApprovalSteps,
+      rankName: webRanks.name,
+      approverName: approver.name,
+      decidedByName: decider.name,
+    })
     .from(webApprovalSteps)
     .innerJoin(webRanks, eq(webRanks.id, webApprovalSteps.rankId))
+    .leftJoin(approver, eq(approver.id, webApprovalSteps.approverEmployeeId))
     .leftJoin(decider, eq(decider.id, webApprovalSteps.decidedByEmployeeId))
     .where(
       and(
@@ -226,7 +271,12 @@ export async function stepsFor(requestIds: string[]): Promise<Map<string, StepVi
     .orderBy(asc(webApprovalSteps.stepNo));
   for (const r of rows) {
     const list = map.get(r.step.requestId) ?? [];
-    list.push({ ...r.step, rankName: r.rankName, decidedByName: r.decidedByName });
+    list.push({
+      ...r.step,
+      rankName: r.rankName,
+      approverName: r.approverName,
+      decidedByName: r.decidedByName,
+    });
     map.set(r.step.requestId, list);
   }
   return map;
@@ -400,9 +450,26 @@ export type ApprovalItem = RequestView & {
   applicantHireDate: string;
 };
 
-/** 내 직급의 승인을 기다리는 결재 (내 신청은 빼고) */
+/** 결재함 질의가 쓰는 「나」. employee 가 붙은 Viewer 에서만 만든다 */
+function deciderOf(employee: EmployeeWithRank, isApprover: boolean): Decider {
+  return { employeeId: employee.id, rankId: employee.rankId, isApprover };
+}
+
+/**
+ * 내 승인을 기다리는 결재 (내 신청은 빼고).
+ *
+ * 🔴 「내 것인가」의 판정은 `approval-scope.ts` 한 곳에 있다 — 사람으로 박힌
+ * 단계는 그 사람의 것이고, 옛 단계(사람 칸이 빈 것)는 예전처럼 직급으로
+ * 판정한다. 뒤엣것이 없으면 **전환 순간 대기 중이던 신청이 모든 결재함에서
+ * 사라진다.**
+ *
+ * 🔴 문 앞의 `isApprover` 검사를 뺐다. 결재선에 이름이 오른 사람은 직급에
+ * 결재권이 없어도 자기 단계를 결재해야 하기 때문이다. 대신 질의가 **내
+ * 단계만** 돌려주므로 남의 것이 보일 길은 없다 (옛 직급 단계는 조건 안에서
+ * 여전히 `isApprover` 를 함께 본다).
+ */
 export async function pendingForApprover(viewer: Viewer): Promise<ApprovalItem[]> {
-  if (!viewer.employee || !viewer.isApprover) return [];
+  if (!viewer.employee) return [];
   const rows = await db
     .select({
       stepId: webApprovalSteps.id,
@@ -419,7 +486,7 @@ export async function pendingForApprover(viewer: Viewer): Promise<ApprovalItem[]
       and(
         eq(webApprovalSteps.status, "PENDING"),
         eq(webApprovalSteps.isDeleted, false),
-        eq(webApprovalSteps.rankId, viewer.employee.rankId),
+        myStepCondition(deciderOf(viewer.employee, viewer.isApprover)),
         eq(webLeaveRequests.status, "PENDING"),
         eq(webLeaveRequests.isDeleted, false),
         ne(webLeaveRequests.employeeId, viewer.employee.id),
@@ -438,7 +505,7 @@ export async function pendingForApprover(viewer: Viewer): Promise<ApprovalItem[]
 }
 
 export async function pendingCountFor(viewer: Viewer): Promise<number> {
-  if (!viewer.employee || !viewer.isApprover) return 0;
+  if (!viewer.employee) return 0;
   const [row] = await db
     .select({ n: sql<number>`count(*)::int` })
     .from(webApprovalSteps)
@@ -447,7 +514,7 @@ export async function pendingCountFor(viewer: Viewer): Promise<number> {
       and(
         eq(webApprovalSteps.status, "PENDING"),
         eq(webApprovalSteps.isDeleted, false),
-        eq(webApprovalSteps.rankId, viewer.employee.rankId),
+        myStepCondition(deciderOf(viewer.employee, viewer.isApprover)),
         eq(webLeaveRequests.status, "PENDING"),
         eq(webLeaveRequests.isDeleted, false),
         ne(webLeaveRequests.employeeId, viewer.employee.id),

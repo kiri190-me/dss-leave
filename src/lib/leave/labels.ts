@@ -51,6 +51,14 @@ export const KIND_LABEL: Record<RequestKind, string> = {
   CANCEL: "취소 요청",
 };
 
+/**
+ * 결재 단계에 적을 이름. 사람이 박혀 있으면 **사람**, 사람 칸이 빈 옛 단계는 직급.
+ * (결재선이 직급이던 때에 만들어진 단계만 직급 이름이 나온다)
+ */
+export function stepLabel(step: { approverName: string | null; rankName: string }): string {
+  return step.approverName ?? step.rankName;
+}
+
 /** 1 → "1일", 0.5 → "0.5일", 2.5 → "2.5일" */
 export function formatDays(n: number): string {
   const v = Math.round(n * 10) / 10;

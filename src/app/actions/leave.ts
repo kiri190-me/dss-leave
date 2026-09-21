@@ -4,10 +4,11 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
 import type { ActionState } from "@/lib/action-state";
-import { requireAdmin, requireApprover, requireMember, safeReturnTo } from "@/lib/auth/guards";
+import { requireAdmin, requireMember, safeReturnTo } from "@/lib/auth/guards";
 import {
   adminCancel,
   decideStep,
+  skipStep,
   submitCancel,
   submitLeave,
   withdrawRequest,
@@ -64,9 +65,16 @@ export async function withdrawAction(_prev: ActionState, formData: FormData): Pr
   return finish(await withdrawRequest(member, field(formData, "requestId")), "/leave");
 }
 
-/** 결재 (승인·반려). 어느 버튼을 눌렀는지는 decision 으로 온다 */
+/**
+ * 결재 (승인·반려). 어느 버튼을 눌렀는지는 decision 으로 온다.
+ *
+ * 🔴 문 앞에서 `requireApprover()`(직급의 결재권)를 묻지 않는다. 결재선에
+ * 이름이 오른 사람은 직급에 결재권이 없어도 자기 단계를 결재해야 하기
+ * 때문이다. 진짜 판정은 `decideStep` 이 **단계마다** 한다 — 내 단계가
+ * 아니면 거기서 막힌다 (approval-scope.ts).
+ */
 export async function decideAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const member = await requireApprover();
+  const member = await requireMember();
   const decision = field(formData, "decision");
   if (decision !== "approve" && decision !== "reject") {
     return { error: "승인 또는 반려를 골라 주세요." };
@@ -78,6 +86,16 @@ export async function decideAction(_prev: ActionState, formData: FormData): Prom
     field(formData, "comment"),
   );
   return finish(result, "/approvals");
+}
+
+/**
+ * 휴가 관리자가 막힌 결재 단계를 건너뛴다 (결재자 퇴사 등).
+ * 끝나면 보던 화면으로 돌아간다.
+ */
+export async function skipStepAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  const admin = await requireAdmin();
+  const back = safeReturnTo(field(formData, "back"));
+  return finish(await skipStep(admin, field(formData, "stepId"), field(formData, "reason")), back);
 }
 
 /** 휴가 관리자의 정정 (휴가 취소 처리). 끝나면 보던 직원 화면으로 돌아간다 */

@@ -214,7 +214,14 @@ export default async function CalendarPage({
           </Link>
         )}
 
-        {viewer.isApprover && pendingCount > 0 && (
+        {/*
+          🔴 `viewer.isApprover`(직급의 결재권)를 함께 묻지 않는다. 결재선에
+          이름이 오른 사람은 직급에 결재권이 없어도 결재를 해야 하는데, 머리말의
+          「결재함」 메뉴는 아직 직급으로 보이고 안 보이고가 갈린다 — 그 사람이
+          자기 결재함으로 들어오는 길은 지금 이 안내뿐이다.
+          `pendingCount` 는 **내 단계만** 센다(data.ts 의 pendingCountFor).
+        */}
+        {pendingCount > 0 && (
           <Link
             href="/approvals"
             className="block rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 hover:bg-amber-100"

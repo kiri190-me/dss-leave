@@ -19,7 +19,7 @@ async function main() {
   const { and, eq } = await import("drizzle-orm");
   const { loadEmployee } = await import("../src/lib/auth/guards");
   const wf = await import("../src/lib/leave/workflow");
-  const { getBalance } = await import("../src/lib/leave/data");
+  const { getBalance, pendingCountFor, pendingForApprover } = await import("../src/lib/leave/data");
 
   type Member = import("../src/lib/auth/guards").Member;
 
@@ -37,12 +37,17 @@ async function main() {
   async function stepsOf(requestId: string) {
     return db.select().from(s.webApprovalSteps).where(eq(s.webApprovalSteps.requestId, requestId));
   }
-  /** 이 사람 직급의 결재 단계 (상태 무관) */
+  /** 이 사람에게 걸린 결재 단계 (상태 무관). 결재선이 사람이 된 뒤로는 사람으로 찾는다 */
   async function stepFor(requestId: string, who: Member) {
     const [st] = await db
       .select()
       .from(s.webApprovalSteps)
-      .where(and(eq(s.webApprovalSteps.requestId, requestId), eq(s.webApprovalSteps.rankId, who.employee.rankId)));
+      .where(
+        and(
+          eq(s.webApprovalSteps.requestId, requestId),
+          eq(s.webApprovalSteps.approverEmployeeId, who.employee.id),
+        ),
+      );
     return st ?? null;
   }
   async function approveAll(requestId: string, order: Member[]) {
@@ -70,14 +75,14 @@ async function main() {
   };
 
   let newId = "";
-  await step("사원 신청 → 과장·부장·대표 세 명에게 동시에 결재 대기", async () => {
+  await step("사원 신청 → 결재선 전원(정민재·최동욱·윤성호)에게 동시에 결재 대기", async () => {
     const r = await wf.submitLeave(사원, { leaveType: "ANNUAL", startDate: "2026-11-02", endDate: "2026-11-03", reason: "테스트" });
     ok(r);
     newId = r.requestId!;
     const steps = await stepsOf(newId);
     assert.equal(steps.length, 3);
     assert.ok(steps.every((x) => x.status === "PENDING"));
-    assert.match(r.message, /과장·부장·대표 모두 승인하면 확정/);
+    assert.match(r.message, /정민재·최동욱·윤성호 모두 승인하면 확정/);
     assert.equal((await reqOf(newId)).days, 2);
   });
 
@@ -86,7 +91,7 @@ async function main() {
     assert.equal((await wf.decideStep(대리, st!.id, true, "")).ok, false);
   });
 
-  await step("다른 직급의 단계는 결재할 수 없다 (부장이 과장 단계를)", async () => {
+  await step("남의 단계는 결재할 수 없다 (최동욱이 정민재 단계를)", async () => {
     const st = await stepFor(newId, 과장);
     assert.equal((await wf.decideStep(부장, st!.id, true, "")).ok, false);
   });
@@ -95,7 +100,7 @@ async function main() {
     const st = await stepFor(newId, 대표);
     const r = await wf.decideStep(대표, st!.id, true, "");
     ok(r);
-    assert.match(r.message, /과장·부장의 승인을 기다립니다/);
+    assert.match(r.message, /정민재·최동욱의 승인을 기다립니다/);
     assert.equal((await reqOf(newId)).status, "PENDING");
   });
 
@@ -187,17 +192,17 @@ async function main() {
     ok(await wf.withdrawRequest(사원, r.requestId!));
   });
 
-  await step("과장 신청은 부장·대표만 결재 (자기 직급은 빠짐)", async () => {
+  await step("결재선 안의 사람이 신청하면 자기 뒤만 결재 (정민재 → 최동욱·윤성호)", async () => {
     const r = await wf.submitLeave(과장, { leaveType: "ANNUAL", startDate: "2026-11-16", endDate: "2026-11-16", reason: "" });
     ok(r);
-    assert.match(r.message, /부장·대표 모두 승인하면/);
+    assert.match(r.message, /최동욱·윤성호 모두 승인하면/);
     assert.equal((await stepsOf(r.requestId!)).length, 2);
     const st = await stepFor(r.requestId!, 부장);
     assert.equal((await wf.decideStep(과장, st!.id, true, "")).ok, false);
     ok(await wf.withdrawRequest(과장, r.requestId!));
   });
 
-  await step("대표 신청은 결재 없이 바로 승인", async () => {
+  await step("결재선 맨 끝 사람(윤성호)의 신청은 결재 없이 바로 승인", async () => {
     const r = await wf.submitLeave(대표, { leaveType: "ANNUAL", startDate: "2026-11-20", endDate: "2026-11-20", reason: "" });
     ok(r);
     assert.equal((await reqOf(r.requestId!)).status, "APPROVED");
@@ -221,6 +226,149 @@ async function main() {
   await step("모양이 틀린 ID 는 DB 오류 대신 '찾을 수 없음'", async () => {
     assert.equal((await wf.withdrawRequest(사원, "not-a-uuid")).ok, false);
     assert.equal((await wf.decideStep(과장, "'; drop table x; --", true, "")).ok, false);
+  });
+
+  /* ---------------------------------------------------------------- */
+  /* 직급 → 사람 전환에서 지켜야 할 것들 (2026-09-21)                    */
+  /* ---------------------------------------------------------------- */
+
+  await step("🔴 전환: 사람 칸이 빈 옛 단계도 결재함에서 사라지지 않는다", async () => {
+    const r = await wf.submitLeave(사원, {
+      leaveType: "OTHER",
+      startDate: "2026-12-07",
+      endDate: "2026-12-07",
+      reason: "옛 단계",
+    });
+    ok(r);
+    // 사람 기반으로 바뀌기 전에 만들어진 단계처럼 되돌린다 (rank_id 만 있는 행)
+    await db
+      .update(s.webApprovalSteps)
+      .set({ approverEmployeeId: null })
+      .where(eq(s.webApprovalSteps.requestId, r.requestId!));
+
+    assert.ok((await pendingForApprover(과장)).some((x) => x.id === r.requestId));
+    assert.ok((await pendingCountFor(과장)) > 0);
+    // 결재선에 없는 대리(결재권 없는 직급)에게는 여전히 보이지 않는다
+    assert.equal((await pendingForApprover(대리)).some((x) => x.id === r.requestId), false);
+
+    // 옛 규칙대로 직급으로 결재된다
+    const [st] = await db
+      .select()
+      .from(s.webApprovalSteps)
+      .where(
+        and(
+          eq(s.webApprovalSteps.requestId, r.requestId!),
+          eq(s.webApprovalSteps.rankId, 과장.employee.rankId),
+        ),
+      );
+    assert.equal((await wf.decideStep(부장, st.id, true, "")).ok, false); // 남의 직급 단계
+    ok(await wf.decideStep(과장, st.id, true, ""));
+    ok(await wf.withdrawRequest(사원, r.requestId!));
+  });
+
+  await step("🔴 결재선을 바꿔도 이미 대기 중인 신청의 결재자는 그대로다", async () => {
+    const r = await wf.submitLeave(사원, {
+      leaveType: "OTHER",
+      startDate: "2026-12-08",
+      endDate: "2026-12-08",
+      reason: "굳힌 결재선",
+    });
+    ok(r);
+    const before = (await stepsOf(r.requestId!)).map((x) => x.approverEmployeeId).sort();
+
+    // 결재선에서 과장을 뺀다
+    await db
+      .update(s.webApprovalRouteSteps)
+      .set({ isDeleted: true, deletedAt: new Date() })
+      .where(eq(s.webApprovalRouteSteps.approverEmployeeId, 과장.employee.id));
+
+    assert.deepEqual(
+      (await stepsOf(r.requestId!)).map((x) => x.approverEmployeeId).sort(),
+      before,
+    );
+    assert.ok((await pendingForApprover(과장)).some((x) => x.id === r.requestId));
+
+    // 새 신청부터는 두 명이다
+    const r2 = await wf.submitLeave(대리, {
+      leaveType: "OTHER",
+      startDate: "2026-12-09",
+      endDate: "2026-12-09",
+      reason: "바뀐 뒤",
+    });
+    ok(r2);
+    assert.equal((await stepsOf(r2.requestId!)).length, 2);
+
+    await db
+      .update(s.webApprovalRouteSteps)
+      .set({ isDeleted: false, deletedAt: null })
+      .where(eq(s.webApprovalRouteSteps.approverEmployeeId, 과장.employee.id));
+    ok(await wf.withdrawRequest(사원, r.requestId!));
+    ok(await wf.withdrawRequest(대리, r2.requestId!));
+  });
+
+  await step("🔴 결재선이 비면 결재 없이 바로 등록된다", async () => {
+    await db
+      .update(s.webApprovalRouteSteps)
+      .set({ isDeleted: true, deletedAt: new Date() })
+      .where(eq(s.webApprovalRouteSteps.isDeleted, false));
+
+    const r = await wf.submitLeave(사원, {
+      leaveType: "OTHER",
+      startDate: "2026-12-10",
+      endDate: "2026-12-10",
+      reason: "결재선 없음",
+    });
+    ok(r);
+    assert.equal(r.code, "auto");
+    assert.equal((await reqOf(r.requestId!)).status, "APPROVED");
+    assert.equal((await stepsOf(r.requestId!)).length, 0);
+
+    await db
+      .update(s.webApprovalRouteSteps)
+      .set({ isDeleted: false, deletedAt: null })
+      .where(eq(s.webApprovalRouteSteps.isDeleted, true));
+  });
+
+  await step("🔴 관리자가 막힌 단계를 건너뛴다 (승인이 아니라 건너뜀으로 남는다)", async () => {
+    const r = await wf.submitLeave(사원, {
+      leaveType: "OTHER",
+      startDate: "2026-12-11",
+      endDate: "2026-12-11",
+      reason: "결재자 퇴사",
+    });
+    ok(r);
+    const st = await stepFor(r.requestId!, 과장);
+    assert.equal((await wf.skipStep(사원, st!.id, "퇴사")).ok, false); // 관리자만
+    assert.equal((await wf.skipStep(관리자, st!.id, "  ")).ok, false); // 사유 필수
+    ok(await wf.skipStep(관리자, st!.id, "퇴사"));
+
+    const skipped = (await stepsOf(r.requestId!)).find((x) => x.id === st!.id)!;
+    assert.equal(skipped.status, "SKIPPED");
+    assert.match(skipped.comment!, /퇴사/);
+    assert.equal((await reqOf(r.requestId!)).status, "PENDING"); // 아직 둘 남았다
+
+    await approveAll(r.requestId!, [부장]);
+    const last = await stepFor(r.requestId!, 대표);
+    const fin = await wf.decideStep(대표, last!.id, true, "");
+    ok(fin);
+    assert.equal(fin.code, "finished");
+    assert.equal((await reqOf(r.requestId!)).status, "APPROVED");
+  });
+
+  await step("🔴 마지막 한 명을 건너뛰면 그 자리에서 확정된다", async () => {
+    const r = await wf.submitLeave(부장, {
+      leaveType: "OTHER",
+      startDate: "2026-12-14",
+      endDate: "2026-12-14",
+      reason: "마지막 한 명",
+    });
+    ok(r);
+    assert.equal((await stepsOf(r.requestId!)).length, 1); // 부장 뒤에는 대표뿐
+    const st = await stepFor(r.requestId!, 대표);
+    const done = await wf.skipStep(관리자, st!.id, "장기 부재");
+    ok(done);
+    assert.equal(done.code, "step-skipped-finished");
+    assert.equal((await reqOf(r.requestId!)).status, "APPROVED");
   });
 
   console.log(`\n${passed}개 통과`);

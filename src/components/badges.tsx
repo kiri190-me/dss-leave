@@ -6,6 +6,7 @@ import {
   STATUS_BADGE,
   STATUS_LABEL,
   TYPE_CHIP,
+  stepLabel,
 } from "@/lib/leave/labels";
 
 export function StatusBadge({ status }: { status: LeaveRequest["status"] }) {
@@ -37,7 +38,12 @@ export function TypeChip({ type }: { type: LeaveRequest["leaveType"] }) {
   );
 }
 
-/** 결재 진행 (순서 없음): 과장 ✓ · 부장 대기 · 대표 ✓ */
+/**
+ * 결재 진행 (순서 없음): 정민재 ✓ · 최동욱 대기 · 윤성호 ✓
+ *
+ * 이름은 **그 단계를 맡은 사람**이다. 결재선이 직급이던 때에 만들어진 옛
+ * 단계만 직급 이름이 나온다 (labels.ts 의 stepLabel).
+ */
 export function StepTrail({ steps }: { steps: StepView[] }) {
   if (steps.length === 0) {
     return <span className="text-xs text-slate-500">결재 없이 등록</span>;
@@ -63,7 +69,7 @@ export function StepTrail({ steps }: { steps: StepView[] }) {
                     : "rounded px-1.5 py-0.5 text-slate-400"
             }
           >
-            {s.rankName}
+            {stepLabel(s)}
             {s.status === "APPROVED" && " ✓"}
             {s.status === "REJECTED" && " ✕"}
             {s.status === "PENDING" && " 대기"}

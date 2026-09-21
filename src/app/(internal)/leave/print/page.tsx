@@ -3,8 +3,13 @@ import Link from "next/link";
 import { PrintButton } from "@/components/PrintButton";
 import { requireMember } from "@/lib/auth/guards";
 import { TIMEZONE, formatRange, formatTenure, todayKst, yearOf } from "@/lib/dates";
-import { getBalance, loadHolidaySet, requestsInWindow, type RequestView } from "@/lib/leave/data";
-import { LEAVE_TYPE_INFO, STATUS_LABEL, formatDays } from "@/lib/leave/labels";
+import {
+  getBalance,
+  loadHolidaySet,
+  requestsInWindow,
+  type RequestView,
+} from "@/lib/leave/data";
+import { LEAVE_TYPE_INFO, STATUS_LABEL, formatDays, stepLabel } from "@/lib/leave/labels";
 import { leaveYearOf, leaveYearWindow, tenureOn, workdaysBetween } from "@/lib/leave/rules";
 
 /** 인쇄에 넣는 상태. 기본은 승인·결재 중, '모두'면 반려·취소·거둬들임·변경 전 기록까지 */
@@ -269,8 +274,8 @@ function PrintRow({ r, no, inPeriod }: { r: RequestView; no: number; inPeriod: n
         ) : (
           r.steps.map((s) => (
             <span key={s.id} className="mr-2 inline-block whitespace-nowrap">
-              {s.rankName}
-              {s.decidedByName ? ` ${s.decidedByName}` : ""}{" "}
+              {stepLabel(s)}
+              {s.decidedByName && s.decidedByName !== stepLabel(s) ? ` ${s.decidedByName}` : ""}{" "}
               {s.status === "APPROVED"
                 ? `✓ ${shortDate(s.decidedAt)}`
                 : s.status === "REJECTED"
