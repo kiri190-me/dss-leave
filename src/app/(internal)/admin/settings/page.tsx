@@ -107,9 +107,9 @@ export default async function SettingsPage({
       <section className="rounded-lg border border-slate-200 bg-white p-4">
         <h2 className="text-sm font-semibold text-slate-800">직급</h2>
         <p className="mb-3 mt-0.5 text-xs text-slate-500">
-          순서 숫자가 클수록 높은 직급입니다. 🔴 <b>누가 결재하는지는 직급이 아니라 위 「승인 절차」의 사람 목록이
-          정합니다</b> (2026-09-21 변경). 여기 &lsquo;결재&rsquo; 체크는 이제 <b>휴가 사유를 볼 수 있는 직급</b>과
-          머리말에 「결재함」 메뉴가 보이는 직급만 정합니다.
+          🔴 <b>누가 결재하는지는 직급이 아니라 위 「승인 절차」의 사람 목록이 정합니다</b> (2026-09-21 변경).
+          여기 &lsquo;결재&rsquo; 체크는 이제 <b>휴가 사유를 볼 수 있는 직급</b>과 머리말에 「결재함」 메뉴가 보이는
+          직급만 정합니다. 새로 더한 직급은 <b>목록 맨 아래</b>에 섭니다 (직원 목록도 이 차례로 늘어놓습니다).
         </p>
         <div className="space-y-2">
           {ranks.map((r) => (
@@ -117,10 +117,6 @@ export default async function SettingsPage({
               <ActionForm action={saveRankAction} className="flex flex-wrap items-center gap-2">
                 <input type="hidden" name="id" value={r.id} />
                 <input name="name" required defaultValue={r.name} className={`w-24 ${input}`} />
-                <label className="flex items-center gap-1 text-xs text-slate-500">
-                  순서
-                  <input name="sortOrder" type="number" defaultValue={r.sortOrder} className={`w-16 ${input}`} />
-                </label>
                 <label className="flex items-center gap-1 text-sm text-slate-700">
                   <input name="canApprove" type="checkbox" defaultChecked={r.canApprove} />
                   결재
@@ -140,10 +136,6 @@ export default async function SettingsPage({
         </div>
         <ActionForm action={saveRankAction} className="mt-4 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-4">
           <input name="name" required placeholder="예: 차장" className={`w-24 ${input}`} />
-          <label className="flex items-center gap-1 text-xs text-slate-500">
-            순서
-            <input name="sortOrder" type="number" required placeholder="40" className={`w-16 ${input}`} />
-          </label>
           <label className="flex items-center gap-1 text-sm text-slate-700">
             <input name="canApprove" type="checkbox" />
             결재

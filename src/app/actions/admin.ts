@@ -390,6 +390,15 @@ export async function deleteAdjustmentAction(
 /* 직급                                                                 */
 /* ------------------------------------------------------------------ */
 
+/**
+ * 직급을 넣고 고친다.
+ *
+ * 🔴 `sort_order` 는 **화면에서 사람이 적지 않는다** (2026-09-21). 이 칸은 이제
+ * 결재와 아무 상관이 없고 — 결재선은 web_approval_route_steps 의 사람 목록이
+ * 정한다 — 직급·직원 목록을 늘어놓는 차례로만 쓴다. 그래서 **수정할 때는
+ * 건드리지 않고**, **새로 넣을 때만 지금 가장 큰 값 + 10** 을 자동으로 준다
+ * (하나도 없으면 10). 새 직급은 늘 목록 맨 아래에 선다.
+ */
 export async function saveRankAction(
   _prev: ActionState,
   formData: FormData,
@@ -397,10 +406,8 @@ export async function saveRankAction(
   const admin = await requireAdmin();
   const id = formId(formData, "id");
   const name = text(formData, "name", 20);
-  const sortOrder = int(formData, "sortOrder");
   const canApprove = formData.get("canApprove") === "on";
   if (!name) return { error: "직급 이름을 적어 주세요." };
-  if (sortOrder == null || sortOrder < 0 || sortOrder > 99) return { error: "순서는 0~99 사이 숫자로 적어 주세요." };
 
   const [dup] = await db
     .select({ id: webRanks.id })
@@ -410,25 +417,33 @@ export async function saveRankAction(
   if (dup) return { error: `'${name}' 직급이 이미 있습니다.` };
 
   if (id) {
+    // sortOrder 는 일부러 뺀다 — 화면에 입력칸이 없으니 기존 값을 그대로 둔다.
     await db
       .update(webRanks)
-      .set({ name, sortOrder, canApprove, updatedAt: new Date() })
+      .set({ name, canApprove, updatedAt: new Date() })
       .where(and(eq(webRanks.id, id), eq(webRanks.isDeleted, false)));
     await writeAudit({
       actor: admin.user,
       action: "RANK_UPDATE",
-      summary: `직급 수정: ${name} (순서 ${sortOrder}, 결재권 ${canApprove ? "있음" : "없음"})`,
+      summary: `직급 수정: ${name} (결재권 ${canApprove ? "있음" : "없음"})`,
       entityType: "rank",
       entityId: id,
     });
     return done("직급을 저장했습니다.");
   }
 
+  // 새 직급은 목록 맨 아래. 살아 있는 직급 중 가장 큰 값 + 10 (하나도 없으면 10).
+  const [top] = await db
+    .select({ maxOrder: sql<number | null>`max(${webRanks.sortOrder})::int` })
+    .from(webRanks)
+    .where(eq(webRanks.isDeleted, false));
+  const sortOrder = (top?.maxOrder ?? 0) + 10;
+
   const [created] = await db.insert(webRanks).values({ name, sortOrder, canApprove }).returning();
   await writeAudit({
     actor: admin.user,
     action: "RANK_CREATE",
-    summary: `직급 추가: ${name} (순서 ${sortOrder}, 결재권 ${canApprove ? "있음" : "없음"})`,
+    summary: `직급 추가: ${name} (결재권 ${canApprove ? "있음" : "없음"}) — 목록 맨 아래`,
     entityType: "rank",
     entityId: created.id,
   });
