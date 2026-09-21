@@ -24,7 +24,16 @@
       // vendor/ 에 끌어온 것). 저장소 폴더 안의 소스라 Next 가 제 앱 코드처럼
       // 컴파일한다 — transpilePackages 도 Tailwind @source 도 필요 없다.
       "@dss/ui": ["./vendor/dss-ui/src/index.ts"],
-      "@dss/ui/styles.css": ["./vendor/dss-ui/src/service-menu/service-menu.css"]
+      "@dss/ui/styles.css": ["./vendor/dss-ui/src/service-menu/service-menu.css"],
+      // 🔴 조각마다 CSS 한 장이다 — 메뉴바(styles.css)와 알림 종은 **다른
+      // 파일**이고, 한 장으로 묶으려면 CSS 안에서 @import 를 해야 하는데
+      // 그것은 그쪽 시험이 막는다(@dss/ui README 7절). 쓰는 것만 부른다.
+      //
+      // 🔴 이 줄이 없으면 tsc 는 그대로 통과하는데(타입이 없는 CSS 라)
+      // 화면에서 종의 생김새만 통째로 빠진다 — 눈으로만 드러나는 함정이다.
+      "@dss/ui/notification-bell.css": [
+        "./vendor/dss-ui/src/notification-bell/notification-bell.css"
+      ]
     }
   },
   "include": [

@@ -16,6 +16,10 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypt
 
 import { createRemoteJWKSet, jwtVerify } from "jose";
 
+// 🔴 **타입만** 빌려 온다(import type — 남는 코드가 없다). 포털이 내주는 알림
+// 한 줄의 모양과 종이 받는 모양이 글자 하나까지 같아서, 받은 배열을 옮겨 담지
+// 않고 그대로 넘길 수 있다. 둘이 어긋나면 tsc 가 먼저 말해 준다.
+import type { NotificationBellItem } from "@dss/ui";
 import { env } from "@/lib/env";
 
 /* ------------------------------------------------------------------ */
@@ -383,4 +387,176 @@ export function endSessionUrl(): string {
  */
 export function portalAppsUrl(): string {
   return `${env.ssoIssuer}/apps`;
+}
+
+/* ------------------------------------------------------------------ */
+/* 「이 사람의 합쳐진 알림」을 포털에 묻는다                              */
+/*                                                                     */
+/* 부르는 법과 거절 목록은 dss-auth/docs/사이트-알림-통로.md 에 있다.     */
+/* 이 파일에 두는 이유는 파일 머리말과 같다 — 포털 주소와 자격증명을      */
+/* 아는 곳은 이 파일 하나다. 화면은 받은 배열을 그릴 뿐이다.             */
+/*                                                                     */
+/* 🔴 자격증명은 로그인에 쓰는 것과 **같다**(SSO_CLIENT_ID/SECRET) —      */
+/*    새 설정이 필요 없다. 위의 백채널 로그아웃 검증이 같은 포털·같은     */
+/*    자격증명을 쓰는 것과 한 짝이다.                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 이 왕복을 얼마나 기다릴지.
+ *
+ * 🔴 상한이 **반드시** 있어야 한다. 포털이 죽어 연결이 거절되면 fetch 는 곧바로
+ * 실패하지만, 주소가 틀려 **응답이 없는 곳**을 두드리면 기본값으로는 하염없이
+ * 기다린다. 이 종은 머리말에 있어 모든 화면에 딸려 오므로, 상한이 없으면 알림
+ * 하나 때문에 사이트 전체가 멈춘 것처럼 보인다.
+ *
+ * 2초인 이유: 포털은 같은 사내망에 있고 30초 캐시까지 들고 있어 정상이라면
+ * 수십 ms 다. 2초를 넘겼다는 것은 이미 정상이 아니라는 뜻이다.
+ */
+const NOTIFICATIONS_TIMEOUT_MS = 2000;
+
+/**
+ * 포털이 **다른 시스템들에** 물어 합쳐 준 알림.
+ *
+ * 🔴 여기에 **이 사이트(휴가)의 알림은 없다.** 포털은 부른 사이트 자신에게는
+ *    묻지 않는다(되돌기와 30초 캐시 때문이다 — 그쪽 문서 「빠져 있는 것」 절).
+ *    휴가가 제 결재 알림을 **내주는** 일은 별도이고, 그때 이 화면은
+ *    `[...내것, ...받은것]` 으로 이어 붙이고 개수도 **더해야** 한다.
+ *    지금은 자체 알림이 없어 받은 것이 곧 전부다.
+ *
+ * 칸 이름이 @dss/ui 의 `NotificationBellItem` 과 글자 하나까지 같아서 받은
+ * 배열을 종에 **그대로** 넘긴다 — 그 타입 자체가 포털 응답의 거울이다.
+ */
+export type PortalNotificationFeed = {
+  items: NotificationBellItem[];
+  /**
+   * 배지에 찍을 숫자. 🔴 **포털이 센 값 그대로** 나른다 — 줄 수로 다시 세지
+   * 않는다. 세는 규칙은 시스템마다 다르고(A/S 는 같은 대상을 한 번만 센다),
+   * 여기서 다시 세면 그 시스템의 종과 이 종이 서로 다른 숫자를 말하게 된다.
+   */
+  count: number;
+  /**
+   * 🔴 「한 곳이라도 못 물어봤다」는 표시. **「알림이 없다」와 다른 말이다.**
+   * 지금은 화면에 쓰지 않지만(알림이 없는 것과 똑같이 그린다) 값을 버리지는
+   * 않는다 — 나중에 「일부를 불러오지 못했습니다」를 보이기로 하면 여기 있다.
+   */
+  degraded: boolean;
+};
+
+/**
+ * 못 물어봤을 때의 답. 🔴 **던지지 않는다** — 알림 하나 때문에 머리말이,
+ * 곧 사이트 전체가 깨지는 일은 없어야 한다(그쪽 문서: 사이트는 거절을 삼킨다).
+ */
+const UNREACHABLE: PortalNotificationFeed = { items: [], count: 0, degraded: true };
+
+/** 한 줄의 아홉 칸. 하나라도 글자가 아니면 그 줄만 버린다. */
+function toBellItem(row: unknown): NotificationBellItem | null {
+  if (typeof row !== "object" || row === null) return null;
+  const { key, sourceId, sourceName, id, kind, kindLabel, subject, detail, href } =
+    row as Record<string, unknown>;
+  if (
+    typeof key !== "string" ||
+    typeof sourceId !== "string" ||
+    typeof sourceName !== "string" ||
+    typeof id !== "string" ||
+    typeof kind !== "string" ||
+    typeof kindLabel !== "string" ||
+    typeof subject !== "string" ||
+    typeof detail !== "string" ||
+    typeof href !== "string"
+  ) {
+    return null;
+  }
+  return { key, sourceId, sourceName, id, kind, kindLabel, subject, detail, href };
+}
+
+/**
+ * 포털의 답을 그릴 수 있는 모양으로 만든다. **네트워크를 타지 않는 순수
+ * 함수라** 검사가 그대로 불러 본다(scripts/test-notification-bell.ts).
+ *
+ * 왜 한 번 더 보나: 포털은 우리 편이지만 그 답에는 **다른 시스템들이 만든
+ * 글자**가 실려 온다. 한 시스템이 이상한 줄을 하나 섞어 보냈다고 머리말이
+ * 통째로 깨지면 안 된다 — 그래서 모양이 안 맞는 줄은 **그 줄만** 버린다.
+ * (주소가 그릴 수 없는 것이면 @dss/ui 가 또 한 번 거른다.)
+ */
+export function normalizePortalNotificationFeed(body: unknown): PortalNotificationFeed {
+  if (typeof body !== "object" || body === null) return UNREACHABLE;
+  const answer = body as Record<string, unknown>;
+
+  const items: NotificationBellItem[] = [];
+  if (Array.isArray(answer.items)) {
+    for (const row of answer.items) {
+      const item = toBellItem(row);
+      if (item) items.push(item);
+    }
+  }
+
+  // 🔴 숫자가 아니면 **0** 이다(줄 수로 대신 세지 않는다 — 위 count 주석).
+  // 0 이면 배지만 안 그려지고 목록은 그대로 보인다.
+  const count =
+    typeof answer.count === "number" && Number.isFinite(answer.count) && answer.count > 0
+      ? answer.count
+      : 0;
+
+  return { items, count, degraded: answer.degraded === true };
+}
+
+/**
+ * 포털에 묻는다. 🔴 **어떤 일이 있어도 던지지 않는다** — 포털이 죽었든(503),
+ * 우리를 거절했든(401·403·429), 주소가 틀렸든, 설정이 빠졌든 빈 목록이 나간다.
+ *
+ * @param subject 포털의 users.id (= ID 토큰의 sub). 이 사이트는 `web_users.authSub`
+ *                로 들고 있다. 포털 계정과 이어지지 않은 사람(임시 로그인으로
+ *                들어온 사람)은 물을 수 없다 — 빈 sub 로는 나가지 않는다.
+ *
+ * 🔴 자격증명은 **머리말(Authorization: Basic)** 로만 보낸다. 주소에 실으면
+ *    포털이 400 으로 거절하고, 그 값은 이미 접근 로그에 남아 **다시 발급**해야
+ *    한다(그쪽 문서). 값은 어떤 로그에도 찍지 않는다.
+ */
+export async function fetchPortalNotifications(
+  subject: string,
+): Promise<PortalNotificationFeed> {
+  if (!subject) return UNREACHABLE;
+
+  let response: Response;
+  try {
+    // 🔴 env 의 getter 는 값이 없으면 **던진다** — 그래서 try **안**에서 읽는다.
+    // 설정이 빠진 것 때문에 머리말이 깨지면 안 된다(임시 로그인만 쓰는 PC).
+    const credentials = `${encodeURIComponent(env.ssoClientId)}:${encodeURIComponent(
+      env.ssoClientSecret,
+    )}`;
+
+    response = await fetch(`${env.ssoIssuer}/api/integration/notifications`, {
+      method: "POST",
+      headers: {
+        authorization: `Basic ${Buffer.from(credentials, "utf8").toString("base64")}`,
+        "content-type": "application/x-www-form-urlencoded",
+        accept: "application/json",
+      },
+      body: new URLSearchParams({ sub: subject }).toString(),
+      // 포털의 답은 사람마다 다르고 방금 처리한 일이 바로 빠져야 한다.
+      // 포털이 이미 30초 캐시를 들고 있으므로 여기서 또 담아 둘 이유가 없다.
+      cache: "no-store",
+      signal: AbortSignal.timeout(NOTIFICATIONS_TIMEOUT_MS),
+    });
+  } catch (error) {
+    // 🔴 찍는 것은 오류의 **종류**뿐이다(TimeoutError·TypeError …).
+    console.error(
+      "[sso] 알림을 물어보지 못했습니다:",
+      error instanceof Error ? error.name : "unknown",
+    );
+    return UNREACHABLE;
+  }
+
+  if (!response.ok) {
+    // 거절 본문은 포털의 내부 설정을 설명할 수 있다. 상태만 남긴다.
+    console.error("[sso] 알림 통로 거절:", response.status);
+    return UNREACHABLE;
+  }
+
+  try {
+    return normalizePortalNotificationFeed(await response.json());
+  } catch {
+    console.error("[sso] 알림 응답을 읽지 못했습니다.");
+    return UNREACHABLE;
+  }
 }
