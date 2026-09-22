@@ -46,6 +46,30 @@ function flag(name: string): boolean {
   return process.env[name] === "true";
 }
 
+/**
+ * redirect_uri 에서 「밖에서 이 앱에 닿는 주소」만 떼어 낸다.
+ *
+ * ── 왜 새 환경변수를 두지 않는가 ────────────────────────────────────────
+ * SSO_REDIRECT_URI 가 이미 **그 주소**다. 포털이 로그인 끝에 브라우저를 되돌려
+ * 보내는 곳이므로, 정의상 「밖에서 이 앱에 닿는 주소」와 같아야 한다. 값을 하나
+ * 더 두면 둘이 어긋날 수 있고, 어긋난 쪽이 알림 링크라면 증상은 「다른 사이트의
+ * 종에서 누르면 엉뚱한 데로 간다」 하나뿐이라 원인을 찾기 어렵다.
+ * `auto` 도 저쪽이 이미 풀어 준다.
+ *
+ * 콜백 경로를 떼어 낼 수 없으면 던진다 — 조용히 넘어가면 알림 링크가
+ * `…/api/auth/sso/callback/approvals` 가 된다.
+ *
+ * (A/S 시스템 config/sso.ts 의 getAppBaseUrl 과 같은 판정이다.)
+ */
+export function appBaseUrlFrom(redirectUri: string): string {
+  if (!redirectUri.endsWith(SSO_CALLBACK_PATH)) {
+    throw new Error(
+      `SSO_REDIRECT_URI 는 ${SSO_CALLBACK_PATH} 로 끝나야 합니다 — 이 값에서 이 앱 자신의 주소도 읽습니다.`,
+    );
+  }
+  return redirectUri.slice(0, -SSO_CALLBACK_PATH.length).replace(/\/+$/, "");
+}
+
 export const env = {
   /** PostgreSQL 접속 주소 (이 사이트 전용 DB) */
   get databaseUrl(): string {
@@ -145,6 +169,22 @@ export const env = {
     const raw = required("SSO_REDIRECT_URI");
     if (!isAutoValue(raw)) return raw;
     return `${resolveAutoUrl(raw, OWN_PORT, primaryLanAddress())}${SSO_CALLBACK_PATH}`;
+  },
+
+  /**
+   * 밖에서 이 앱에 닿는 주소(스킴 + 호스트 + 포트). 뒤에 슬래시를 남기지 않는다.
+   *
+   * 다른 사이트의 종에 실릴 알림 링크를 절대 주소로 만드는 데 쓴다
+   * (api/integration/notifications).
+   *
+   * 🔴 **요청의 Host 머리말에서 얻지 않는다.** 그 값은 부르는 쪽이 마음대로
+   * 적는다(호스트 머리말 주입). 알림 링크는 **다른 사이트의 화면에 그려져 사람이
+   * 누르는** 주소라, 부르는 쪽이 고른 호스트가 거기 실리면 그대로 피싱 링크가
+   * 된다. ssoRedirectUri 가 request.url 을 쓰지 않는 것과 같은 판단이고,
+   * 여기서는 이유가 하나 더 무겁다.
+   */
+  get appBaseUrl(): string {
+    return appBaseUrlFrom(env.ssoRedirectUri);
   },
 
   /**

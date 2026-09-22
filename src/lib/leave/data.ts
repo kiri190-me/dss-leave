@@ -1,7 +1,7 @@
 /**
  * 휴가 데이터 읽기. 계산 규칙은 rules.ts, 쓰기(신청·결재)는 workflow.ts 에 있다.
  */
-import { and, asc, desc, eq, gte, inArray, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lte, ne, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 
 import type { EmployeeWithRank, Viewer } from "@/lib/auth/guards";
@@ -470,6 +470,35 @@ function deciderOf(employee: EmployeeWithRank, isApprover: boolean): Decider {
 }
 
 /**
+ * **지금 내 차례인 신청**을 고르는 조건. 아래 셋이 이 한 문장을 함께 쓴다 —
+ * 결재함 목록(pendingForApprover) · 결재함 건수(pendingCountFor) · 포털에 내주는
+ * 알림(pendingApprovalNotifications).
+ *
+ * 🔴 **사본을 만들지 마라.** 「이 단계가 내 것인가」는 approval-scope.ts 한 곳이
+ * 답하고(myStepCondition), 「지금 차례인가」는 여기 한 곳이 답한다. 셋 중 하나만
+ * 어긋나면 「결재함에는 보이는데 눌러도 안 된다」거나 「알림은 왔는데 결재함이
+ * 비어 있다」가 된다.
+ *
+ * 무엇을 보는가:
+ *  · 단계가 `PENDING` — 🔴 `WAITING` 은 아직 내 차례가 아니다(한 명씩 차례로
+ *    가므로 앞사람이 처리해야 깨어난다). `APPROVED`·`REJECTED`·`SKIPPED` 는
+ *    이미 끝난 단계다.
+ *  · 그 단계가 내 것이다 (approval-scope.ts).
+ *  · 신청 자체도 아직 결재 중이다.
+ *  · 🔴 내 신청은 뺀다 — 자기 휴가를 자기가 결재하지 않는다.
+ */
+export function myPendingApprovalWhere(me: Decider): SQL {
+  return and(
+    eq(webApprovalSteps.status, "PENDING"),
+    eq(webApprovalSteps.isDeleted, false),
+    myStepCondition(me),
+    eq(webLeaveRequests.status, "PENDING"),
+    eq(webLeaveRequests.isDeleted, false),
+    ne(webLeaveRequests.employeeId, me.employeeId),
+  )!;
+}
+
+/**
  * 내 승인을 기다리는 결재 (내 신청은 빼고).
  *
  * 🔴 「내 것인가」의 판정은 `approval-scope.ts` 한 곳에 있다 — 사람으로 박힌
@@ -496,16 +525,7 @@ export async function pendingForApprover(viewer: Viewer): Promise<ApprovalItem[]
     .innerJoin(webLeaveRequests, eq(webLeaveRequests.id, webApprovalSteps.requestId))
     .innerJoin(webEmployees, eq(webEmployees.id, webLeaveRequests.employeeId))
     .innerJoin(webRanks, eq(webRanks.id, webEmployees.rankId))
-    .where(
-      and(
-        eq(webApprovalSteps.status, "PENDING"),
-        eq(webApprovalSteps.isDeleted, false),
-        myStepCondition(deciderOf(viewer.employee, viewer.isApprover)),
-        eq(webLeaveRequests.status, "PENDING"),
-        eq(webLeaveRequests.isDeleted, false),
-        ne(webLeaveRequests.employeeId, viewer.employee.id),
-      ),
-    )
+    .where(myPendingApprovalWhere(deciderOf(viewer.employee, viewer.isApprover)))
     .orderBy(asc(webLeaveRequests.startDate));
 
   const views = await attach(rows.map((r) => r.req));
@@ -524,17 +544,50 @@ export async function pendingCountFor(viewer: Viewer): Promise<number> {
     .select({ n: sql<number>`count(*)::int` })
     .from(webApprovalSteps)
     .innerJoin(webLeaveRequests, eq(webLeaveRequests.id, webApprovalSteps.requestId))
-    .where(
-      and(
-        eq(webApprovalSteps.status, "PENDING"),
-        eq(webApprovalSteps.isDeleted, false),
-        myStepCondition(deciderOf(viewer.employee, viewer.isApprover)),
-        eq(webLeaveRequests.status, "PENDING"),
-        eq(webLeaveRequests.isDeleted, false),
-        ne(webLeaveRequests.employeeId, viewer.employee.id),
-      ),
-    );
+    .where(myPendingApprovalWhere(deciderOf(viewer.employee, viewer.isApprover)));
   return row?.n ?? 0;
+}
+
+/**
+ * 포털에 내줄 알림 목록 — 결재함과 **같은 조건**으로 고른 뒤, 한 줄에 실을
+ * 것만 얇게 읽는다.
+ *
+ * pendingForApprover 를 그대로 쓰지 않는 이유는 그쪽이 화면용이기 때문이다 —
+ * 단계 이력·대상 휴가·뒤따르는 신청까지 붙이고(attach), 신청자마다 잔여 일수를
+ * 다시 계산한다. 알림 한 줄에는 이름과 기간뿐이라 그 값을 치를 이유가 없다.
+ * 🔴 **고르는 조건은 한 문장을 함께 쓴다**(myPendingApprovalWhere).
+ *
+ * 🔴 사유(reason)를 읽지 않는다 — 이 목록은 포털을 거쳐 다른 시스템의 화면에
+ * 그려진다(leave/portal-notifications.ts 의 그 주석).
+ */
+export type PendingApprovalNotification = {
+  stepId: string;
+  applicantName: string;
+  kind: LeaveRequest["kind"];
+  leaveType: LeaveRequest["leaveType"];
+  startDate: string;
+  endDate: string;
+  days: number;
+};
+
+export async function pendingApprovalNotifications(
+  me: Decider,
+): Promise<PendingApprovalNotification[]> {
+  return db
+    .select({
+      stepId: webApprovalSteps.id,
+      applicantName: webEmployees.name,
+      kind: webLeaveRequests.kind,
+      leaveType: webLeaveRequests.leaveType,
+      startDate: webLeaveRequests.startDate,
+      endDate: webLeaveRequests.endDate,
+      days: webLeaveRequests.days,
+    })
+    .from(webApprovalSteps)
+    .innerJoin(webLeaveRequests, eq(webLeaveRequests.id, webApprovalSteps.requestId))
+    .innerJoin(webEmployees, eq(webEmployees.id, webLeaveRequests.employeeId))
+    .where(myPendingApprovalWhere(me))
+    .orderBy(asc(webLeaveRequests.startDate));
 }
 
 /** 내가 처리한 결재 (최근 순) */

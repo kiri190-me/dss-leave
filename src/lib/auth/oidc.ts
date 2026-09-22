@@ -215,9 +215,13 @@ export async function exchangeCodeForIdToken(
  *
  * 지연 생성인 이유: 이 파일을 불러오는 것만으로 SSO_ISSUER 를 요구하면
  * next build 가 환경변수 없이 돌지 못한다(도커 이미지에는 .env 가 없다).
+ *
+ * 🔴 **내보내는 이유**: 포털이 알림을 물으러 올 때 들고 오는 서명 토큰도 같은
+ * 포털의 같은 열쇠로 검증한다(auth/portal-service-token.ts). 거기서 JWKS 를
+ * 한 벌 더 만들면 캐시도 두 벌이 되어, 포털이 키를 갈 때 한쪽만 늦게 따라간다.
  */
 let jwksCache: ReturnType<typeof createRemoteJWKSet> | null = null;
-function jwks() {
+export function portalJwks(): ReturnType<typeof createRemoteJWKSet> {
   jwksCache ??= createRemoteJWKSet(new URL(`${env.ssoIssuer}/.well-known/jwks.json`));
   return jwksCache;
 }
@@ -251,7 +255,7 @@ export async function verifyIdToken(
   expectedNonce: string,
 ): Promise<SsoIdentity | null> {
   try {
-    const { payload } = await jwtVerify(idToken, jwks(), {
+    const { payload } = await jwtVerify(idToken, portalJwks(), {
       issuer: env.ssoIssuer,
       audience: env.ssoClientId,
       // 이 PC 와 포털의 시계 차이 몇 초를 흡수한다. 그 이상은 맞춰야 할
@@ -329,7 +333,7 @@ export function readLogoutClaims(payload: Record<string, unknown>): string | nul
  */
 export async function verifyLogoutToken(token: string): Promise<string | null> {
   try {
-    const { payload } = await jwtVerify(token, jwks(), {
+    const { payload } = await jwtVerify(token, portalJwks(), {
       issuer: env.ssoIssuer,
       audience: env.ssoClientId,
       clockTolerance: 30,

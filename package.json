@@ -18,6 +18,7 @@
     "test:auth": "tsx scripts/test-auth.ts",
     "test:menu": "tsx scripts/test-service-menu.ts",
     "test:bell": "tsx scripts/test-notification-bell.ts",
+    "test:portal": "tsx scripts/test-portal-notifications.ts",
     "test:leave": "tsx scripts/test-leave-rules.ts",
     "test:workflow": "tsx scripts/test-workflow.ts"
   },
