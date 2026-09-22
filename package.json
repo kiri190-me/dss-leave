@@ -15,6 +15,7 @@
     "db:migrate": "drizzle-kit migrate",
     "seed:ranks": "tsx scripts/seed-ranks.ts",
     "seed:dev": "tsx scripts/seed-dev.ts",
+    "seed:dummy": "tsx scripts/seed-dummy-approval.ts",
     "test:auth": "tsx scripts/test-auth.ts",
     "test:menu": "tsx scripts/test-service-menu.ts",
     "test:bell": "tsx scripts/test-notification-bell.ts",

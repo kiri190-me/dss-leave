@@ -22,6 +22,7 @@ async function main() {
   const s = await import("../src/lib/db/schema");
   const { and, eq } = await import("drizzle-orm");
   const { loadEmployee } = await import("../src/lib/auth/guards");
+  const { canOpenApprovalBox } = await import("../src/lib/leave/approval-scope");
   const wf = await import("../src/lib/leave/workflow");
   const { getBalance, pendingCountFor, pendingForApprover } = await import("../src/lib/leave/data");
 
@@ -31,7 +32,18 @@ async function main() {
     const [e] = await db.select().from(s.webEmployees).where(eq(s.webEmployees.name, name));
     const [user] = await db.select().from(s.webUsers).where(eq(s.webUsers.employeeId, e.id));
     const employee = (await loadEmployee(e.id))!;
-    return { user, employee, isAdmin: user.role === "LEAVE_ADMIN", isApprover: employee.rank.canApprove };
+    // 🔴 화면과 **같은 판정**으로 만든다 (guards.ts 의 getViewer). isApprover 는
+    // 직급의 결재권, canOpenApprovals 는 결재함 문 — 둘은 다른 값이다.
+    return {
+      user,
+      employee,
+      isAdmin: user.role === "LEAVE_ADMIN",
+      isApprover: employee.rank.canApprove,
+      canOpenApprovals: canOpenApprovalBox({
+        rankCanApprove: employee.rank.canApprove,
+        onApprovalRoute: employee.onApprovalRoute,
+      }),
+    };
   }
 
   async function reqOf(id: string) {

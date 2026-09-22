@@ -85,7 +85,14 @@ export function AppHeader({
               </NavLink>
             </>
           )}
-          {viewer.isApprover && (
+          {/*
+            🔴 `viewer.isApprover`(직급의 결재권)가 아니라 `canOpenApprovals` 를
+            묻는다 (2026-09-22). 결재선에 이름이 오른 사람은 직급에 결재권이
+            없어도 자기 차례가 되면 알림을 받는데, 직급으로만 그리면 그 사람
+            머리말에는 **들어갈 메뉴가 없다.** 두 값이 왜 갈렸는지는
+            lib/leave/approval-scope.ts 의 canOpenApprovalBox 머리말에 있다.
+          */}
+          {viewer.canOpenApprovals && (
             <NavLink href="/approvals">
               결재함
               {pendingCount > 0 && (

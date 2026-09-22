@@ -10,7 +10,11 @@ import { PgDialect } from "drizzle-orm/pg-core";
 import { addMonths, fullMonths, calendarWeeks } from "../src/lib/dates";
 import type { StepStatus } from "../src/lib/db/schema";
 import { japanHolidays } from "../src/lib/jp-holidays";
-import { isMyStep, myStepCondition } from "../src/lib/leave/approval-scope";
+import {
+  canOpenApprovalBox,
+  isMyStep,
+  myStepCondition,
+} from "../src/lib/leave/approval-scope";
 import { approvalTurnLabel } from "../src/lib/leave/labels";
 import {
   allocate,
@@ -476,6 +480,58 @@ check("🔴 전환: 결재함 질의의 SQL 에도 옛 단계(사람 칸이 빈 
 check("결재함 질의: 직급에 결재권이 없으면 내 이름이 박힌 단계만 본다", () => {
   const { sql: text, params } = new PgDialect().sqlToQuery(myStepCondition(결재권없는나));
   assert.match(text, /"approver_employee_id" = \$1/);
+  assert.equal(/rank_id/.test(text), false);
+  assert.deepEqual(params, ["e-김대리"]);
+});
+
+/* ------------------------------------------------------------------ */
+/* 「결재함 문을 열 수 있는가」 — 결재 권한과 **다른 질문**이다 (2026-09-22) */
+/*                                                                      */
+/* 인가 판정이라 시험을 남긴다. 고쳐진 결함: 결재선에 이름이 올라 자기      */
+/* 차례가 되고 알림까지 받는 사람이, 직급에 결재권이 없으면 머리말에       */
+/* 「결재함」 메뉴를 얻지 못해 들어갈 길이 없었다.                         */
+/* ------------------------------------------------------------------ */
+
+check("결재함 문: 직급에 결재권이 있으면 열린다 (결재선에 없어도)", () => {
+  assert.equal(
+    canOpenApprovalBox({ rankCanApprove: true, onApprovalRoute: false }),
+    true,
+  );
+});
+
+check("🔴 결재함 문: 직급에 결재권이 없어도 결재선에 이름이 올라 있으면 열린다", () => {
+  // 고쳐진 결함 그 자체다. 이 줄이 false 로 돌아가면 그 사람은 종에 알림이
+  // 떠도 들어갈 메뉴가 없다.
+  assert.equal(
+    canOpenApprovalBox({ rankCanApprove: false, onApprovalRoute: true }),
+    true,
+  );
+});
+
+check("결재함 문: 직급에도 결재선에도 없으면 열리지 않는다", () => {
+  assert.equal(
+    canOpenApprovalBox({ rankCanApprove: false, onApprovalRoute: false }),
+    false,
+  );
+});
+
+check("🔴 문이 열려도 결재 권한은 넓어지지 않는다 — 남의 단계는 내 것이 아니다", () => {
+  // 결재선에만 이름이 오른 사람(직급 결재권 없음). 문은 열린다…
+  const 결재선에만오른나 = { employeeId: "e-김대리", rankId: "r-대리", isApprover: false };
+  assert.equal(canOpenApprovalBox({ rankCanApprove: false, onApprovalRoute: true }), true);
+  // …그래도 남의 이름이 박힌 단계는 내 것이 아니다.
+  assert.equal(
+    isMyStep({ approverEmployeeId: "e-이부장", rankId: "r-부장" }, 결재선에만오른나),
+    false,
+  );
+  // 🔴 그리고 **사람 칸이 빈 옛 직급 단계**도 보이지 않는다. isApprover 의 뜻
+  // (「옛 직급 단계도 볼 수 있는가」)을 결재함 문과 함께 넓히지 않았다는 것 —
+  // 넓혔다면 자기 직급에 걸린 남의 옛 단계가 제 결재함에 떴을 것이다.
+  assert.equal(
+    isMyStep({ approverEmployeeId: null, rankId: "r-대리" }, 결재선에만오른나),
+    false,
+  );
+  const { sql: text, params } = new PgDialect().sqlToQuery(myStepCondition(결재선에만오른나));
   assert.equal(/rank_id/.test(text), false);
   assert.deepEqual(params, ["e-김대리"]);
 });

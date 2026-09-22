@@ -18,6 +18,11 @@
  *
  * 옛 행의 직급 판정에는 예전과 똑같이 `isApprover`(직급의 결재권)를 함께 본다 —
  * 전환 전에 결재할 수 있던 사람의 범위를 넓히지도 좁히지도 않는다.
+ *
+ * ── 이 파일에는 판정이 **둘** 있다 (2026-09-22) ──────────────────────
+ * 위의 「이 단계가 내 것인가」와, 아래의 「결재함 문을 열 수 있는가」
+ * (`canOpenApprovalBox`)다. 🔴 **섞이면 안 되므로** 한 파일에 나란히 둔다 —
+ * 무엇이 왜 다른지는 아래 함수 머리말에 적었다.
  */
 import { and, eq, isNull, or, type SQL } from "drizzle-orm";
 
@@ -43,6 +48,46 @@ export type Decider = {
 export function isMyStep(step: StepOwner, me: Decider): boolean {
   if (step.approverEmployeeId !== null) return step.approverEmployeeId === me.employeeId;
   return me.isApprover && step.rankId === me.rankId;
+}
+
+/* ------------------------------------------------------------------ */
+/* 「결재함 문을 열 수 있는가」 — 위 판정과 **다른 질문**이다               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 🔴 **`isApprover` 와 갈라 둔 까닭** (2026-09-22).
+ *
+ * 「결재함을 열 수 있는가」와 「이 단계를 결재할 수 있는가」는 다른 말인데, 오래
+ * 한 값(`isApprover` = 직급의 결재권)이 둘을 함께 맡고 있었다. 결재선이 직급에서
+ * **사람**으로 바뀐 뒤(2026-09-21) 그 겹침이 결함이 됐다 — 결재선에 이름이
+ * 올랐지만 직급에 결재권이 없는 사람은 자기 차례가 되어 알림까지 받는데
+ * **머리말에 「결재함」 메뉴가 그려지지 않는다.**
+ *
+ * 그렇다고 `isApprover` 를 「결재선에 올랐으면 true」로 넓힐 수는 없다. 그 값은
+ * 위 `isMyStep`·`myStepCondition` 에도 넘어가는데, 거기서는 뜻이 전혀 다르다 —
+ * 🔴 **「사람 칸이 빈 옛 직급 단계도 볼 수 있는가」**다. 넓히면 결재선에 이름이
+ * 올랐다는 이유로 **남의 직급에 걸린 옛 단계까지 제 결재함에 뜬다.** 사유 열람
+ * (guards.ts 의 `canSeeReason`)도 같은 값을 보므로 함께 넓어진다.
+ *
+ * 그래서 값을 둘로 나눈다:
+ *   · `isApprover`          직급의 결재권 그대로. **뜻을 넓히지 않는다.**
+ *   · `canOpenApprovalBox`  결재함 문. 직급의 결재권 **또는** 결재선에 제 이름.
+ *
+ * 🔴 문을 넓혀도 **결재 권한은 넓어지지 않는다.** 결재함이 보여 주는 것은
+ * 내 단계와 내가 처리한 기록뿐이고(data.ts 의 `myPendingApprovalWhere` ·
+ * `decidedBy`), 실제 승인·반려는 `decideStep` 이 단계마다 `isMyStep` 으로
+ * 다시 막는다. 문이 열려도 남의 단계는 결재할 수 없다.
+ */
+export type ApprovalBoxViewer = {
+  /** 직급에 결재권이 있는가 (web_ranks.can_approve) */
+  rankCanApprove: boolean;
+  /** 결재선(web_approval_route_steps)에 제 이름이 살아 있는가 */
+  onApprovalRoute: boolean;
+};
+
+/** 결재함 문을 열 수 있는가 */
+export function canOpenApprovalBox(me: ApprovalBoxViewer): boolean {
+  return me.rankCanApprove || me.onApprovalRoute;
 }
 
 /**

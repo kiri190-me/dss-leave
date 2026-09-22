@@ -8,14 +8,16 @@
  * 역할
  * - 직원      : 명단에 연결된 계정
  * - 결재권자  : 직원 중 직급의 결재권이 켜진 사람 (과장·부장·대표)
+ * - 결재함    : 위 결재권자 **또는** 결재선에 이름이 오른 사람 (canOpenApprovals)
  * - 휴가 관리자: web_users.role = LEAVE_ADMIN
  */
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { cache } from "react";
 
 import { db } from "@/lib/db";
 import {
+  webApprovalRouteSteps,
   webEmployees,
   webRanks,
   type Employee,
@@ -23,17 +25,51 @@ import {
   type WebUser,
 } from "@/lib/db/schema";
 import { env } from "@/lib/env";
+import { canOpenApprovalBox } from "@/lib/leave/approval-scope";
 import { RETURN_TO_FALLBACK, safeReturnTo } from "./return-to";
 import { getSessionUser } from "./session";
 
-export type EmployeeWithRank = Employee & { rank: Rank };
+export type EmployeeWithRank = Employee & {
+  rank: Rank;
+  /**
+   * 결재선(web_approval_route_steps)에 제 이름이 살아 있는가.
+   *
+   * 🔴 **왕복이 늘지 않는다** — 아래 `loadEmployee` 의 **같은 질의**가 exists
+   * 하위 질의로 함께 읽는다. 이 파일은 모든 화면이 지나는 자리라 질의를 하나
+   * 더 더하면 매 요청에 왕복이 하나 는다. 결재선 목록을 읽는 함수는 이미
+   * 있지만(leave/data.ts 의 `loadApprovalRoute`) 쓰지 않았다: 질의가 하나
+   * 늘고, 그 파일이 이 파일의 `canSeeReason` 을 값으로 가져다 쓰므로
+   * 거꾸로 부르면 순환 import 가 된다.
+   *
+   * 퇴사·삭제 여부는 볼 필요가 없다 — `loadEmployee` 가 이미 재직 중인
+   * 직원만 찾으므로, 여기까지 온 사람은 `loadApprovalRoute` 의 살아 있는
+   * 결재선 구성원(active=true)과 같은 조건이다.
+   */
+  onApprovalRoute: boolean;
+};
 
 export type Viewer = {
   user: WebUser;
   /** 명단에 연결되지 않았거나 퇴사 처리된 계정이면 null */
   employee: EmployeeWithRank | null;
   isAdmin: boolean;
+  /**
+   * 🔴 **직급의 결재권**(web_ranks.can_approve)뿐이다. 뜻을 넓히지 않는다 —
+   * 이 값은 사유 열람(`canSeeReason`)과 **사람 칸이 빈 옛 직급 단계**의 판정
+   * (leave/approval-scope.ts)에도 그대로 넘어간다. 결재함 문을 열지 말지는
+   * 아래 `canOpenApprovals` 가 따로 답한다.
+   */
   isApprover: boolean;
+  /**
+   * 결재함을 열 수 있는가 — 직급에 결재권이 있거나 **결재선에 제 이름이
+   * 올라 있으면** 열린다 (leave/approval-scope.ts 의 `canOpenApprovalBox`,
+   * 까닭은 그 머리말에).
+   *
+   * 🔴 「이 단계를 결재할 수 있는가」와 다른 말이다. 문이 열려도 결재함이
+   * 보여 주는 것은 내 단계뿐이고, 실제 승인·반려는 `decideStep` 이 단계마다
+   * 다시 막는다.
+   */
+  canOpenApprovals: boolean;
 };
 
 export type Member = Viewer & { employee: EmployeeWithRank };
@@ -57,7 +93,17 @@ export async function loadEmployee(
   employeeId: string,
 ): Promise<EmployeeWithRank | null> {
   const rows = await db
-    .select({ employee: webEmployees, rank: webRanks })
+    .select({
+      employee: webEmployees,
+      rank: webRanks,
+      // 결재선에 제 이름이 올라 있는가. 🔴 하위 질의로 **이 질의 안에서** 본다 —
+      // 왕복을 늘리지 않으려는 것이다 (EmployeeWithRank 머리말).
+      onApprovalRoute: sql<boolean>`exists (
+        select 1 from ${webApprovalRouteSteps}
+        where ${webApprovalRouteSteps.approverEmployeeId} = ${webEmployees.id}
+          and ${webApprovalRouteSteps.isDeleted} = false
+      )`,
+    })
     .from(webEmployees)
     .innerJoin(webRanks, eq(webRanks.id, webEmployees.rankId))
     .where(
@@ -69,7 +115,9 @@ export async function loadEmployee(
     )
     .limit(1);
   const row = rows[0];
-  return row ? { ...row.employee, rank: row.rank } : null;
+  return row
+    ? { ...row.employee, rank: row.rank, onApprovalRoute: row.onApprovalRoute }
+    : null;
 }
 
 /** 현재 요청의 사용자. 한 요청 안에서는 한 번만 읽는다. */
@@ -82,6 +130,12 @@ export const getViewer = cache(async (): Promise<Viewer | null> => {
     employee,
     isAdmin: user.role === "LEAVE_ADMIN",
     isApprover: Boolean(employee?.rank.canApprove),
+    canOpenApprovals: employee
+      ? canOpenApprovalBox({
+          rankCanApprove: employee.rank.canApprove,
+          onApprovalRoute: employee.onApprovalRoute,
+        })
+      : false,
   };
 });
 
@@ -135,9 +189,21 @@ export async function requireMember(): Promise<Member> {
   return viewer as Member;
 }
 
+/**
+ * 결재함 문지기.
+ *
+ * 🔴 묻는 것은 `canOpenApprovals` 다 — **직급의 결재권이 아니다**(2026-09-22).
+ * 결재선에 이름이 오른 사람은 직급에 결재권이 없어도 자기 차례가 되어 알림까지
+ * 받는데, 예전처럼 `isApprover` 를 물으면 바로 그 사람이 홈으로 튕겨 나간다.
+ *
+ * 🔴 **지금 이 함수를 부르는 곳은 없다.** 결재함 화면과 결재 서버 액션은
+ * `requireMember()` 로 들이고 「내 단계인가」를 질의·`decideStep` 에서 따로
+ * 막는다(그쪽 머리말들). 그래도 지우지 않고 뜻을 맞춰 둔다 — 「결재자만 들어오는
+ * 화면」이 다시 생길 때 여기서 옛 판정을 집어 가면 같은 결함이 되살아난다.
+ */
 export async function requireApprover(): Promise<Member> {
   const member = await requireMember();
-  if (!member.isApprover) redirect("/");
+  if (!member.canOpenApprovals) redirect("/");
   return member;
 }
 
@@ -147,7 +213,14 @@ export async function requireAdmin(): Promise<Viewer> {
   return viewer;
 }
 
-/** 휴가 사유를 볼 수 있는가: 본인과 결재권자만 (휴가 관리자라도 결재권이 없으면 못 본다) */
+/**
+ * 휴가 사유를 볼 수 있는가: 본인과 결재권자만 (휴가 관리자라도 결재권이 없으면 못 본다)
+ *
+ * 🔴 `canOpenApprovals` 가 아니라 `isApprover`(직급의 결재권)를 묻는다 —
+ * 결재함 문이 넓어진 것과 **사유 열람은 별개**다. 결재선에 이름만 오른 사람은
+ * 달력에서 남의 사유를 보지 못하고, 자기 결재함에 든 신청의 사유만 본다
+ * (그 화면은 이 함수를 거치지 않는다).
+ */
 export function canSeeReason(viewer: Viewer, requestEmployeeId: string): boolean {
   return viewer.isApprover || viewer.employee?.id === requestEmployeeId;
 }
