@@ -117,6 +117,10 @@ export default async function EmployeeDetailPage({
                   </option>
                 ))}
               </select>
+              <span className="mt-1 block text-[11px] text-slate-400">
+                직급을 바꾸면 휴가 사유를 볼 수 있는 범위가 함께 바뀝니다. 연차 일수와 이미 진행 중인 결재는 바뀌지
+                않습니다(결재자는 「휴가 설정」의 승인 절차가 정합니다).
+              </span>
             </label>
             <label className="text-xs text-slate-600">
               입사일

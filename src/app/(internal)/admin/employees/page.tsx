@@ -1,7 +1,7 @@
 import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import Link from "next/link";
 
-import { createEmployeeAction, linkUserAction } from "@/app/actions/admin";
+import { createEmployeeAction, linkUserAction, setEmployeeRankAction } from "@/app/actions/admin";
 import { ActionForm } from "@/components/ActionForm";
 import { requireAdmin } from "@/lib/auth/guards";
 import { formatTenure, todayKst } from "@/lib/dates";
@@ -13,6 +13,14 @@ import { tenureOn } from "@/lib/leave/rules";
 
 const input =
   "rounded-md border border-slate-300 px-2.5 py-1.5 text-sm focus:border-slate-500 focus:outline-none";
+
+/**
+ * 표 안에 들어가는 작은 고르개·단추.
+ * 🔴 일부러 좁다 — 표는 `min-w-[860px]` 이라 칸이 넓어지면 좁은 화면에서 가로로 밀린다.
+ * 글자 색은 주지 않는다 (퇴사자 줄의 회색을 그대로 물려받게).
+ */
+const cellControl =
+  "rounded border border-slate-300 bg-white px-1 py-0.5 text-xs focus:border-slate-500 focus:outline-none";
 
 export default async function EmployeesPage({
   searchParams,
@@ -58,7 +66,13 @@ export default async function EmployeesPage({
       <div>
         <h1 className="text-xl font-semibold text-slate-900">직원 관리</h1>
         <p className="mt-1 text-sm text-slate-500">
-          입사일을 넣으면 근속 표에 따라 연차가 자동으로 정해집니다. 이름을 누르면 계산 내역과 조정 화면이 나옵니다.
+          입사일을 넣으면 근속 표에 따라 연차가 자동으로 정해집니다. 이름을 누르면 계산 내역과 일수 조정 화면이
+          나오고, 거기서 이름·직급·입사일·재직 여부·메모를 고칠 수 있습니다.
+        </p>
+        <p className="mt-1 text-sm text-slate-500">
+          <b className="font-medium text-slate-700">직급은 아래 표에서 바로 바꿀 수 있습니다.</b> 직급을 바꾸면{" "}
+          <b className="font-medium text-slate-700">휴가 사유를 볼 수 있는 범위</b>가 함께 바뀝니다. 연차 일수와 이미
+          진행 중인 결재는 바뀌지 않습니다(결재자는 「휴가 설정」의 승인 절차가 정합니다).
         </p>
       </div>
 
@@ -141,8 +155,34 @@ export default async function EmployeesPage({
                     {!employee.isActive && <span className="ml-1 text-xs">(퇴사)</span>}
                   </td>
                   <td className="px-3 py-2">
-                    {rank.name}
-                    {rank.canApprove && <span className="ml-1 text-xs text-emerald-700">결재</span>}
+                    {/*
+                      직급만 바꾸는 폼. 🔴 updateEmployeeAction 이 아니라 직급 하나만 받는
+                      setEmployeeRankAction 을 쓴다 (그쪽은 이름·입사일·재직·메모까지 되쓴다).
+                      🔴 max-w 로 칸 폭을 못 박아 두었다 — 결과 문구가 떠도 표가 넓어지지 않고
+                      칸 안에서 줄바꿈된다. 퇴사자 줄에서도 바꿀 수 있다(상세 화면과 같은 규칙).
+                    */}
+                    <ActionForm
+                      action={setEmployeeRankAction}
+                      className="flex max-w-[9.5rem] flex-wrap items-center gap-1"
+                    >
+                      <input type="hidden" name="id" value={employee.id} />
+                      <select
+                        name="rankId"
+                        aria-label={`${employee.name} 직급`}
+                        defaultValue={employee.rankId}
+                        className={cellControl}
+                      >
+                        {ranks.map((r) => (
+                          <option key={r.id} value={r.id}>
+                            {r.name}
+                          </option>
+                        ))}
+                      </select>
+                      <button type="submit" className={`${cellControl} hover:bg-slate-50`}>
+                        저장
+                      </button>
+                      {rank.canApprove && <span className="text-xs text-emerald-700">결재</span>}
+                    </ActionForm>
                   </td>
                   <td className="px-3 py-2 tabular">{employee.hireDate}</td>
                   <td className="px-3 py-2 text-slate-600">{formatTenure(tenure.months)}</td>

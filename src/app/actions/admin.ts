@@ -64,13 +64,32 @@ function softDeleteBy(admin: Viewer, reason: string | null) {
   };
 }
 
-async function rankExists(id: string): Promise<boolean> {
-  const rows = await db
-    .select({ id: webRanks.id })
+/**
+ * 살아 있는 직급 한 줄. 이름까지 갖고 온다 —
+ * 🔴 감사 로그 요약문에 **직급 이름**을 적어야 하기 때문이다(UUID 만 남기면
+ * 나중에 로그를 읽는 사람이 무엇이 무엇으로 바뀌었는지 알 수 없다).
+ */
+async function liveRank(id: string): Promise<{ id: string; name: string } | null> {
+  const [row] = await db
+    .select({ id: webRanks.id, name: webRanks.name })
     .from(webRanks)
     .where(and(eq(webRanks.id, id), eq(webRanks.isDeleted, false)))
     .limit(1);
-  return Boolean(rows[0]);
+  return row ?? null;
+}
+
+async function rankExists(id: string): Promise<boolean> {
+  return Boolean(await liveRank(id));
+}
+
+/** 감사 로그에 적을 옛 직급 이름. 🔴 지워진 직급도 찾는다 (옛 값이라 남아 있어야 한다) */
+async function rankNameOf(id: string): Promise<string> {
+  const [row] = await db
+    .select({ name: webRanks.name })
+    .from(webRanks)
+    .where(eq(webRanks.id, id))
+    .limit(1);
+  return row?.name ?? "(알 수 없음)";
 }
 
 /* ------------------------------------------------------------------ */
@@ -115,7 +134,8 @@ export async function updateEmployeeAction(
   const isActive = formData.get("isActive") === "on";
   const note = text(formData, "note", 300) || null;
   if (!name) return { error: "이름을 적어 주세요." };
-  if (!(await rankExists(rankId))) return { error: "직급을 골라 주세요." };
+  const rank = await liveRank(rankId);
+  if (!rank) return { error: "직급을 골라 주세요." };
   if (!isYmd(hireDate)) return { error: "입사일을 확인하세요." };
 
   const [before] = await db
@@ -137,15 +157,77 @@ export async function updateEmployeeAction(
   if (before.isActive !== isActive) changes.isActive = { from: before.isActive, to: isActive };
   if (before.note !== note) changes.note = { from: before.note, to: note };
 
+  // 🔴 요약문에 직급은 **이름**으로 적는다. changes 에는 UUID 가 남지만 그것만으로는
+  // 감사 로그를 읽는 사람이 무슨 직급이 무엇으로 바뀌었는지 알 수 없다.
+  // (setEmployeeRankAction 과 같은 꼴로 적는다 — 한쪽만 고치면 어느 기록을 믿을지 모르게 된다)
+  const notes: string[] = [];
+  if (changes.rankId) notes.push(`직급 ${await rankNameOf(before.rankId)} → ${rank.name}`);
+  if (changes.hireDate) notes.push(`입사일 ${before.hireDate} → ${hireDate}`);
+
   await writeAudit({
     actor: admin.user,
     action: "EMPLOYEE_UPDATE",
-    summary: `직원 수정: ${name}${changes.hireDate ? ` (입사일 ${before.hireDate} → ${hireDate})` : ""}`,
+    summary: `직원 수정: ${name}${notes.length > 0 ? ` (${notes.join(", ")})` : ""}`,
     entityType: "employee",
     entityId: id,
     changes,
   });
   return done("저장했습니다.");
+}
+
+/**
+ * 직원 목록에서 **직급만** 바꾼다.
+ *
+ * 🔴 updateEmployeeAction 을 재사용하지 않는다. 그 액션은 이름·입사일·재직 여부·
+ * 메모까지 **전부 읽어 되쓰므로**, 한 칸만 바꾸는 폼에서 부르면 나머지 네 칸을
+ * 덮어쓴다. 특히 `isActive` 는 체크박스 규칙(`=== "on"`)이라 hidden 으로 실어
+ * 보내다 틀리면 **사람이 조용히 퇴사 처리된다.**
+ *
+ * 🔴 직급을 바꾸면 **휴가 사유 열람 범위**가 함께 바뀐다(guards.ts 의 canSeeReason
+ * 이 직급의 결재권을 본다). 연차 일수(입사일·근속 표만 본다)와 이미 박힌 결재
+ * 단계의 주인(approver_employee_id)은 바뀌지 않는다.
+ */
+export async function setEmployeeRankAction(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const admin = await requireAdmin();
+  const id = formId(formData, "id");
+  const rankId = formId(formData, "rankId");
+
+  // 지금 직급은 이름까지 함께 읽는다. 직급이 지워져 있어도 찾아야 하므로 id 로만 잇는다.
+  const [before] = await db
+    .select({ employee: webEmployees, rank: webRanks })
+    .from(webEmployees)
+    .innerJoin(webRanks, eq(webRanks.id, webEmployees.rankId))
+    .where(and(eq(webEmployees.id, id), eq(webEmployees.isDeleted, false)))
+    .limit(1);
+  if (!before) return { error: "직원을 찾을 수 없습니다." };
+
+  // 🔴 바뀐 것이 없으면 아무것도 하지 않는다 — 같은 직급을 다시 골랐다고
+  // 감사 로그를 늘리지 않는다 (setRoleAction 과 같은 꼴).
+  if (before.employee.rankId === rankId) return { ok: "바뀐 것이 없습니다." };
+
+  const next = await liveRank(rankId);
+  if (!next) return { error: "직급을 골라 주세요." };
+
+  await db
+    .update(webEmployees)
+    .set({ rankId, updatedAt: new Date() })
+    .where(eq(webEmployees.id, id));
+  await writeAudit({
+    actor: admin.user,
+    action: "EMPLOYEE_RANK",
+    summary: `직급 변경: ${before.employee.name} ${before.rank.name} → ${next.name}`,
+    entityType: "employee",
+    entityId: id,
+    changes: {
+      rankId: { from: before.employee.rankId, to: next.id },
+      rankName: { from: before.rank.name, to: next.name },
+    },
+  });
+  // 목록 표 칸 안에 뜨는 문구다 — 칸이 넓어지지 않게 짧게 적는다.
+  return done(`${next.name}(으)로 바꿨습니다.`);
 }
 
 /** 잘못 등록한 직원만 지운다. 휴가 기록이 있으면 '퇴사 처리'를 쓴다 */

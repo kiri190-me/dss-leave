@@ -22,6 +22,11 @@ export type AuditAction =
   | "LEAVE_ADMIN_CANCEL"
   | "EMPLOYEE_CREATE"
   | "EMPLOYEE_UPDATE"
+  /**
+   * 직원의 **직급만** 바꿨다 (직원 관리 목록에서 바로).
+   * 🔴 직급은 휴가 사유 열람 범위를 정하므로 EMPLOYEE_UPDATE 에 묻지 않고 따로 남긴다.
+   */
+  | "EMPLOYEE_RANK"
   | "EMPLOYEE_DELETE"
   | "USER_LINK"
   | "USER_UNLINK"

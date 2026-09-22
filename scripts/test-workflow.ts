@@ -431,6 +431,45 @@ async function main() {
     assert.equal((await reqOf(r.requestId!)).status, "APPROVED");
   });
 
+  await step("🔴 직급을 바꿔도 이미 박힌 결재 단계의 주인은 그대로다", async () => {
+    // 직원 관리 목록에서 직급을 바로 바꿀 수 있게 한 뒤(2026-09-22) 지키는 것:
+    // 직급은 사유 열람 범위만 바꾸고, 결재 단계는 **사람**으로 박혀 있어 흔들리지 않는다.
+    const r = await wf.submitLeave(사원, {
+      leaveType: "OTHER",
+      startDate: "2026-12-15",
+      endDate: "2026-12-15",
+      reason: "직급 변경",
+    });
+    ok(r);
+    const snapshot = async () =>
+      (await stepsOf(r.requestId!))
+        .sort((a, b) => a.stepNo - b.stepNo)
+        .map((x) => `${x.approverEmployeeId}/${x.rankId}/${x.status}`);
+    const before = await snapshot();
+
+    // 지금 차례인 결재자(정민재)를 **결재권 없는 직급**으로 내린다
+    await db
+      .update(s.webEmployees)
+      .set({ rankId: 사원.employee.rankId })
+      .where(eq(s.webEmployees.id, 과장.employee.id));
+    const 내려간과장 = await member("정민재");
+    assert.equal(내려간과장.isApprover, false); // 사유 열람 범위는 실제로 좁아졌다
+
+    // 단계의 사람·직급·차례는 하나도 바뀌지 않고, 결재함에도 그대로 남아 결재된다
+    assert.deepEqual(await snapshot(), before);
+    assert.ok((await pendingForApprover(내려간과장)).some((x) => x.id === r.requestId));
+    const st = await stepFor(r.requestId!, 과장);
+    ok(await wf.decideStep(내려간과장, st!.id, true, ""));
+    assert.deepEqual(await statusesOf(r.requestId!), ["APPROVED", "PENDING", "WAITING"]);
+
+    // 직급을 되돌리고 신청도 거둬들인다
+    await db
+      .update(s.webEmployees)
+      .set({ rankId: 과장.employee.rankId })
+      .where(eq(s.webEmployees.id, 과장.employee.id));
+    ok(await wf.withdrawRequest(사원, r.requestId!));
+  });
+
   console.log(`\n${passed}개 통과`);
   process.exit(0);
 }
