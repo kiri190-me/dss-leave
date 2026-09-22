@@ -9,6 +9,8 @@
  *   다른 시스템들(A/S · 계측기 · 개선요청 · PO/내자)이 저마다 가진 알림
  *     → 포털이 모아 합친다 (dss-auth 의 notifications/merge.ts)
  *     → 이 사이트의 **서버**가 client_id/secret 으로 묻는다 (auth/oidc.ts)
+ *   🔴 + **이 사이트 자신의 결재 대기**(포털은 부른 사이트 것을 빼고 준다)
+ *     → PortalNotificationBell 이 자기 것을 **앞에** 이어 붙인다
  *     → (internal)/layout.tsx 가 <Suspense> 로 감싸 머리말에 내려보내고
  *     → AppHeader 가 줄의 **맨 오른쪽 끝**에 그린다 (@dss/ui 의 NotificationBell)
  *
@@ -21,6 +23,8 @@
  *   3. 개수는 **포털이 센 값 그대로**다 — 줄 수로 다시 세지 않는다.
  *   4. 이상한 줄은 **그 줄만** 버린다.
  *   5. 그리는 자리는 줄의 **맨 오른쪽 끝**이고 래퍼가 없다.
+ *   6. 🔴 **자기 것이 앞, 받은 것이 뒤**이고 배지는 **두 개수의 합**이다.
+ *      포털이 죽어도 자기 알림은 그대로 보이고, 자기 줄에 사유는 없다.
  *
  * 레이아웃·머리말은 실제로 불러 볼 수 없다(세션·DB·요청 맥락이 필요하다).
  * 그 자리들만 **소스 글자로** 구조를 못 박는다 — 무르지만 없는 것보다 낫다.
@@ -42,13 +46,23 @@ process.env.SSO_CLIENT_SECRET = FAKE_SECRET;
 process.env.SSO_REDIRECT_URI = "http://192.168.1.10:3700/api/auth/sso/callback";
 process.env.SSO_TX_SECRET = "0123456789abcdef0123456789abcdef";
 
-import { NotificationBell } from "@dss/ui";
+import { NotificationBell, type NotificationBellItem } from "@dss/ui";
 
 import {
   fetchPortalNotifications,
   normalizePortalNotificationFeed,
   type PortalNotificationFeed,
 } from "../src/lib/auth/oidc";
+import {
+  APPROVALS_PATH,
+  LEAVE_APPROVAL_KIND,
+  OWN_NOTIFICATION_SOURCE_ID,
+  bellFeedWithOwnFirst,
+  buildPortalNotificationFeed,
+  toOwnBellItem,
+  type PendingApprovalRow,
+  type PortalActor,
+} from "../src/lib/leave/portal-notifications";
 
 let passed = 0;
 function check(name: string, fn: () => void) {
@@ -89,6 +103,72 @@ function row(overrides: Record<string, unknown> = {}): Record<string, unknown> {
     href: "http://192.168.35.215:3000/repair-cases/123",
     ...overrides,
   };
+}
+
+/* ------------------------------------------------------------------ */
+/* 이 사이트 자신의 알림 — DB 자리에만 가짜를 끼운다                      */
+/* ------------------------------------------------------------------ */
+
+/** 위 SSO_REDIRECT_URI 에서 나오는 이 앱 자신의 주소(env.ts 의 appBaseUrl). */
+const OWN_BASE_URL = "http://192.168.1.10:3700";
+
+/** 결재선에 올라 있고 명단에 연결된 사람. 알림을 받을 수 있는 「나」다. */
+const ME: PortalActor = {
+  role: "MEMBER",
+  decider: { employeeId: "emp-1", rankId: "rank-1", isApprover: true },
+};
+
+/** 결재함 질의가 돌려주는 한 줄(data.ts 의 pendingApprovalNotifications). */
+function approval(overrides: Partial<PendingApprovalRow> = {}): PendingApprovalRow {
+  return {
+    stepId: "step-1",
+    applicantName: "김대리",
+    kind: "NEW",
+    leaveType: "ANNUAL",
+    startDate: "2026-10-05",
+    endDate: "2026-10-06",
+    days: 2,
+    ...overrides,
+  };
+}
+
+/**
+ * 🔴 화면이 자기 알림을 구하는 **그 길** 그대로다 — 창구(route)와 종
+ * (PortalNotificationBell)이 함께 부르는 buildPortalNotificationFeed 에
+ * DB 자리(findActor · listPendingApprovals)만 가짜를 끼운다.
+ */
+function ownFeed(rows: PendingApprovalRow[], actor: PortalActor | null = ME) {
+  return buildPortalNotificationFeed({
+    subject: SUB,
+    baseUrl: OWN_BASE_URL,
+    findActor: async () => actor,
+    listPendingApprovals: async () => rows,
+  });
+}
+
+/** 받은 것이 하나도 없는 답(포털이 죽었을 때와 같은 모양). */
+const NOTHING_RECEIVED: PortalNotificationFeed = { items: [], count: 0, degraded: false };
+
+type Drawn = { type: unknown; props: Record<string, unknown> };
+
+/** 그려진 트리를 납작하게 펼친다 — 무엇이 어느 차례로 그려졌는지 보려고. */
+function flatten(node: unknown, out: Drawn[] = []): Drawn[] {
+  if (Array.isArray(node)) {
+    for (const child of node) flatten(child, out);
+    return out;
+  }
+  if (typeof node !== "object" || node === null || !("props" in node)) return out;
+  const element = node as Drawn;
+  out.push(element);
+  flatten(element.props.children, out);
+  return out;
+}
+
+/** 그려진 줄들의 열쇠 — 차례 그대로. */
+function drawnKeys(feed: { items: readonly NotificationBellItem[]; count: number }): string[] {
+  return flatten(NotificationBell(feed))
+    .filter((el) => el.type === "a")
+    .map((el) => String(el.props["data-notification-key"]));
 }
 
 /* ------------------------------------------------------------------ */
@@ -374,8 +454,18 @@ async function main() {
     // 두면 시크릿을 다루는 자리가 하나 더 생긴다.
     const bell = withoutComments(read("src/components/PortalNotificationBell.tsx"));
     assert.equal(bell.includes('"use client"'), false, "종을 그리는 조각이 클라이언트로 넘어갔다");
-    assert.ok(bell.includes("await fetchPortalNotifications(subject)"));
+    assert.ok(bell.includes("fetchPortalNotifications(subject)"), "이 조각이 포털에 묻지 않는다");
     assert.equal(bell.includes("colorScheme"), false, "다크는 @dss/ui 기본값에 맡긴다");
+  });
+
+  check("🔴 자기 것과 받은 것을 **나란히** 부른다 — 자기 알림이 포털을 기다리지 않는다", () => {
+    // 줄줄이 부르면 포털 왕복(상한 2초)이 끝나야 자기 결재가 뜬다. 포털이
+    // 느린 날 「내 차례인 결재」가 늦게 나타날 이유가 없다.
+    const bell = withoutComments(read("src/components/PortalNotificationBell.tsx"));
+    const parallel = bell.indexOf("await Promise.all([");
+    assert.ok(parallel > 0, "🔴 두 곳을 줄줄이 부른다");
+    assert.ok(bell.indexOf("ownNotifications(subject)") > parallel);
+    assert.ok(bell.indexOf("fetchPortalNotifications(subject)") > parallel);
   });
 
   check("🔴 묻는 열쇠는 검증된 세션의 authSub 다 — 클라이언트가 보낸 값이 아니다", () => {
@@ -471,6 +561,201 @@ async function main() {
     assert.match(listRule[1], /position: absolute;/);
     assert.match(listRule[1], /right: 0;/, "왼쪽에 붙으면 종을 맨 끝에 둘 이유가 사라진다");
     assert.match(listRule[1], /width: min\(20rem, calc\(100vw - 2rem\)\);/);
+  });
+
+  /* ---------------------------------------------------------------- */
+  /* 6. 🔴 자기 알림을 앞에 이어 붙인다                                  */
+  /*    포털은 부른 사이트 자신의 알림을 빼고 답한다 — 그래서 PO·계측기·  */
+  /*    개선요청에서는 휴가 결재가 뜨는데 휴가에서는 뜨지 않았다.          */
+  /* ---------------------------------------------------------------- */
+
+  await checkAsync("🔴 자기 것이 앞, 받은 것이 뒤 — 받은 차례는 다시 섞지 않는다", async () => {
+    const own = await ownFeed([
+      approval({ stepId: "s-1" }),
+      approval({ stepId: "s-2", applicantName: "박사원" }),
+    ]);
+    const received = normalizePortalNotificationFeed({
+      items: [row({ key: "rf-service-system:APPROVAL:1" }), row({ key: "njlee:CAL:2" })],
+      count: 2,
+    });
+
+    const bell = bellFeedWithOwnFirst({ own, received });
+    const expected = [
+      `${OWN_NOTIFICATION_SOURCE_ID}:${LEAVE_APPROVAL_KIND}:s-1`,
+      `${OWN_NOTIFICATION_SOURCE_ID}:${LEAVE_APPROVAL_KIND}:s-2`,
+      "rf-service-system:APPROVAL:1",
+      "njlee:CAL:2",
+    ];
+    assert.deepEqual(
+      bell.items.map((item) => item.key),
+      expected,
+    );
+    // 실제로 그려지는 차례까지 같다.
+    assert.deepEqual(drawnKeys(bell), expected);
+  });
+
+  await checkAsync("🔴 배지는 **자기 개수 + 받은 개수**다 — 줄 수로 다시 세지 않는다", async () => {
+    const own = await ownFeed([approval({ stepId: "s-1" })]);
+    // 포털은 줄 셋을 주면서 2 라고 센다(A/S 는 같은 대상을 한 번만 센다).
+    // 🔴 그 값을 고치지 않는다 — 고치면 A/S 의 종과 다른 숫자를 말한다.
+    const received = normalizePortalNotificationFeed({
+      items: [row({ key: "a" }), row({ key: "b" }), row({ key: "c" })],
+      count: 2,
+    });
+
+    const bell = bellFeedWithOwnFirst({ own, received });
+    assert.equal(bell.count, 3, "1(내 것) + 2(포털이 센 값) 이 아니다");
+    assert.equal(bell.items.length, 4, "줄은 넷이다 — 배지와 다를 수 있다");
+
+    const badge = flatten(NotificationBell(bell)).find(
+      (el) => el.props.className === "dss-bell__badge",
+    );
+    assert.equal(badge?.props.children, 3, "배지에 찍힌 숫자가 합이 아니다");
+  });
+
+  await checkAsync("🔴 포털이 죽어도 자기 알림은 그대로 보인다", async () => {
+    const own = await ownFeed([approval()]);
+    // 실제로 503 을 받아 본다(말로가 아니라).
+    const { feed: received } = await ask((res) => res.writeHead(503).end());
+    assert.deepEqual(received, EMPTY, "503 인데 빈 목록이 아니다");
+
+    const bell = bellFeedWithOwnFirst({ own, received });
+    assert.equal(bell.items.length, 1);
+    assert.equal(bell.count, 1);
+    assert.notEqual(NotificationBell(bell), null, "🔴 포털이 죽어 종까지 사라졌다");
+    assert.deepEqual(drawnKeys(bell), [
+      `${OWN_NOTIFICATION_SOURCE_ID}:${LEAVE_APPROVAL_KIND}:step-1`,
+    ]);
+  });
+
+  await checkAsync("자기 것도 받은 것도 없으면 종 자체가 없다 — 지금과 같은 모습이다", async () => {
+    const bell = bellFeedWithOwnFirst({ own: await ownFeed([]), received: NOTHING_RECEIVED });
+    assert.deepEqual(bell, { items: [], count: 0 });
+    assert.equal(NotificationBell(bell), null);
+  });
+
+  await checkAsync("결재할 것이 없는 사람에게는 받은 것만 보인다", async () => {
+    // 명단에 연결되지 않은 계정(확인 대기)은 결재할 것이 있을 수 없다.
+    const own = await ownFeed([approval()], { role: "MEMBER", decider: null });
+    const received = normalizePortalNotificationFeed({ items: [row({ key: "a" })], count: 1 });
+    const bell = bellFeedWithOwnFirst({ own, received });
+    assert.deepEqual(drawnKeys(bell), ["a"]);
+    assert.equal(bell.count, 1);
+  });
+
+  await checkAsync("🔴 자기 줄에도 휴가 사유는 실리지 않는다", async () => {
+    // 사유는 본인과 결재권 직급에게만 보이는 값이고(guards.ts 의 canSeeReason),
+    // 자기 화면이라도 **같은 함수**가 만든 줄이라 실릴 자리가 없다. 결재함에
+    // 들어가서 본다.
+    const leaked = { ...approval(), reason: "병원 진료" };
+    const own = await ownFeed([leaked]);
+    const bell = bellFeedWithOwnFirst({ own, received: NOTHING_RECEIVED });
+    assert.equal(
+      JSON.stringify(bell.items).includes("병원"),
+      false,
+      "🔴 알림 줄에 사유가 딸려 나왔다",
+    );
+  });
+
+  await checkAsync("🔴 열쇠가 포털 것과 부딪히지 않는다 — 우리 것이 함께 와도", async () => {
+    // 지금 포털은 우리 것을 빼고 주지만, 그 판단이 바뀌는 날 열쇠가 글자까지
+    // 같아지면 React 가 줄을 잘못 지운다(@dss/ui types.ts 의 key).
+    const own = await ownFeed([approval({ stepId: "s-1" })]);
+    const received = normalizePortalNotificationFeed({
+      items: [
+        row({
+          key: `dss-leave:${LEAVE_APPROVAL_KIND}:s-1`,
+          sourceId: "dss-leave",
+          id: `${LEAVE_APPROVAL_KIND}:s-1`,
+        }),
+      ],
+      count: 1,
+    });
+
+    const keys = bellFeedWithOwnFirst({ own, received }).items.map((item) => item.key);
+    assert.equal(new Set(keys).size, keys.length, `🔴 열쇠가 겹쳤다: ${keys.join(" / ")}`);
+    assert.ok(keys[0].startsWith(`${OWN_NOTIFICATION_SOURCE_ID}:`));
+  });
+
+  await checkAsync("자기 줄에는 시스템 이름을 적지 않는다 — 여기가 휴가다", async () => {
+    const own = await ownFeed([approval()]);
+    const mine = toOwnBellItem(own.items[0]);
+    assert.equal(mine.sourceName, "", "자기 줄에 시스템 이름을 적었다");
+    assert.equal(mine.sourceId, OWN_NOTIFICATION_SOURCE_ID);
+
+    const drawn = flatten(NotificationBell({ items: [mine], count: 1 }));
+    assert.equal(
+      drawn.some((el) => el.props.className === "dss-bell__source"),
+      false,
+      "빈 이름인데 시스템 이름 칸이 그려졌다",
+    );
+    // 종류 이름은 그린다 — 남의 줄과 구별되는 것은 이것뿐이다.
+    const kind = drawn.find((el) => el.props.className === "dss-bell__kind");
+    assert.equal(kind?.props.children, "휴가 결재 대기");
+  });
+
+  await checkAsync("자기 줄은 창구가 내주는 아홉 칸에 세 칸만 덧붙인 것이다", async () => {
+    const own = await ownFeed([approval({ stepId: "s-1", applicantName: "김대리" })]);
+    const source = own.items[0];
+    const mine = toOwnBellItem(source);
+
+    assert.deepEqual(Object.keys(mine).sort(), [
+      "detail",
+      "href",
+      "id",
+      "key",
+      "kind",
+      "kindLabel",
+      "sourceId",
+      "sourceName",
+      "subject",
+    ]);
+    // 나머지 여섯 칸은 창구가 내주는 값 그대로다 — 링크도 손대지 않는다.
+    assert.equal(mine.id, source.id);
+    assert.equal(mine.kind, LEAVE_APPROVAL_KIND);
+    assert.equal(mine.subject, "김대리");
+    assert.equal(mine.detail, source.detail);
+    assert.equal(mine.href, `${OWN_BASE_URL}${APPROVALS_PATH}`);
+  });
+
+  check("🔴 화면이 결재 판정을 다시 쓰지 않는다 — 창구가 부르는 그 함수를 그대로 부른다", () => {
+    // 화면이 따로 계산하면 「종에 보이는 것」과 「포털에 내주는 것」이 갈라진다.
+    const bell = withoutComments(read("src/components/PortalNotificationBell.tsx"));
+    const route = withoutComments(read("src/app/api/integration/notifications/route.ts"));
+    for (const [name, source] of [
+      ["종", bell],
+      ["창구", route],
+    ] as const) {
+      assert.ok(source.includes("buildPortalNotificationFeed({"), `${name}: 그 함수를 안 부른다`);
+      assert.ok(source.includes("findActor: findPortalActor"), `${name}: 사람 되짚기가 다르다`);
+      assert.ok(
+        source.includes("listPendingApprovals: pendingApprovalNotifications"),
+        `${name}: 고르는 질의가 다르다`,
+      );
+    }
+    assert.equal(
+      /myPendingApprovalWhere|myStepCondition|drizzle-orm/.test(bell),
+      false,
+      "🔴 종이 결재 판정을 손으로 다시 적었다",
+    );
+    // 🔴 자기 알림에 확인 기능을 붙이지 않았다 — 결재하면 다음 화면에서 저절로
+    //    사라진다. 붙이면 「결재하지 않은 일을 종에서 지우기」가 생긴다.
+    assert.equal(bell.includes("onAcknowledge"), false, "🔴 확인을 붙였다");
+  });
+
+  check("🔴 자기 알림을 읽다 실패해도 화면이 500 이 되지 않는다", () => {
+    // 이 종은 모든 화면에 딸려 오고 <Suspense> 안에 error boundary 가 없다.
+    const bell = withoutComments(read("src/components/PortalNotificationBell.tsx"));
+    const own = bell.slice(bell.indexOf("async function ownNotifications"));
+    assert.ok(own.includes("try {"), "감싸지 않았다");
+    assert.ok(
+      own.indexOf("env.appBaseUrl") > own.indexOf("try {"),
+      "🔴 설정이 없으면 던지는 getter 를 try 밖에서 읽는다",
+    );
+    assert.ok(own.includes("return NO_OWN;"), "실패했을 때 빈 목록을 돌려주지 않는다");
+    assert.equal(/\bthrow\b/.test(own), false, "🔴 자기 알림 통로가 던진다");
+    // 오류 객체를 통째로 찍지 않는다 — 접속 문자열이 딸려 나올 수 있다.
+    assert.ok(own.includes('error instanceof Error ? error.name : "unknown"'));
   });
 
   portal.closeAllConnections();

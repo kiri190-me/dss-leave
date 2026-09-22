@@ -1,14 +1,34 @@
 import { NotificationBell } from "@dss/ui";
 
 import { fetchPortalNotifications } from "@/lib/auth/oidc";
+import { findPortalActor } from "@/lib/auth/portal-actor";
+import { env } from "@/lib/env";
+import { pendingApprovalNotifications } from "@/lib/leave/data";
+import {
+  bellFeedWithOwnFirst,
+  buildPortalNotificationFeed,
+  type PortalNotificationFeed,
+} from "@/lib/leave/portal-notifications";
 
 /**
- * 머리말의 알림 종 — **다른 시스템들의** 알림을 그린다.
+ * 머리말의 알림 종 — **이 사이트의 결재 대기 + 다른 시스템들의** 알림을 그린다.
  *
  * 사내 시스템이 다섯인데(A/S · 개선요청 · 계측기 · PO/내자 · 휴가) 종은 A/S
  * 에만 있었다. 「어느 시스템에 있든 같은 알림을 본다」를 위해 포털이 모든
  * 시스템에 물어 합쳐 주는 통로를 열었고, 이 조각이 그것을 이 사이트에
  * 끌어온다(부르는 법: dss-auth/docs/사이트-알림-통로.md).
+ *
+ * ── 🔴 자기 알림은 포털이 주지 않는다 ───────────────────────────────────
+ * 포털은 **부른 사이트 자신의 알림을 빼고** 답한다(되돌기 방지 + 30초 캐시가
+ * 사이트마다 다른 답을 들고 있어야 하기 때문 — dss-auth 의 site-feed.ts).
+ * 그래서 PO·계측기·개선요청에서는 휴가 결재 알림이 뜨는데 휴가 자신의 종에서는
+ * 뜨지 않았다(2026-09-22 사용자 확인). 이 조각이 **자기 것을 앞에 이어 붙여**
+ * 그 구멍을 막는다.
+ *
+ * 🔴 자기 줄은 **포털에 내주는 그 함수**가 만든다(buildPortalNotificationFeed
+ * — 창구 api/integration/notifications 가 부르는 그것). 화면이 따로 계산하면
+ * 「종에 보이는 것」과 「포털에 내주는 것」이 갈라진다. 묶음이 요구하는 세
+ * 칸만 덧붙이는 일은 portal-notifications.ts 의 toOwnBellItem 이 한다.
  *
  * ── 🔴 왜 **서버**에서 가져오나 (브라우저가 아니라) ──────────────────────
  * 자격증명이 `client_secret` 이라 브라우저에서는 부를 수 없다. 브라우저에서
@@ -31,26 +51,65 @@ import { fetchPortalNotifications } from "@/lib/auth/oidc";
  * 갱신된다.
  *
  * ── 확인(onAcknowledge)을 넘기지 않는 이유 ──────────────────────────────
- * 여기 오는 알림은 **전부 남의 시스템 것**이다. 「확인했다」를 적을 수 있는
- * 곳은 그 알림을 만든 시스템뿐이고, 이 사이트에는 적을 자리가 없다. 줄을
- * 누르면 그 시스템의 화면으로 건너가고, 거기서 일을 마치면 다음 왕복에서
- * 목록이 줄어든다.
+ * 받아 온 알림은 **전부 남의 시스템 것**이다. 「확인했다」를 적을 수 있는 곳은
+ * 그 알림을 만든 시스템뿐이고, 이 사이트에는 적을 자리가 없다. 줄을 누르면 그
+ * 시스템의 화면으로 건너가고, 거기서 일을 마치면 다음 왕복에서 목록이 줄어든다.
+ *
+ * 🔴 **자기 줄에도 확인을 붙이지 않는다.** 이 시스템의 알림은 저장된 것이 아니라
+ * 「지금 네 차례인 결재」를 그 자리에서 센 값이다 — 결재를 하면 그 줄은 다음
+ * 화면에서 저절로 사라진다. 「확인했다」를 적을 곳이 없고, 적을 수 있게 만들면
+ * **결재하지 않은 일을 종에서 지울 수** 있게 된다.
  */
 export async function PortalNotificationBell({ subject }: { subject: string }) {
-  // 🔴 던지지 않는다. 포털이 죽었든 우리를 거절했든 빈 목록이 온다.
-  const feed = await fetchPortalNotifications(subject);
+  // 🔴 둘을 **나란히** 부른다. 줄줄이 부르면 자기 알림이 포털 왕복(상한 2초)
+  //    뒤에야 나타난다 — 포털이 느린 날 「내 결재」가 늦게 뜰 이유가 없다.
+  // 🔴 둘 다 던지지 않는다(아래 ownNotifications · oidc.ts).
+  const [own, received] = await Promise.all([
+    ownNotifications(subject),
+    fetchPortalNotifications(subject),
+  ]);
 
-  // 🔴 이 사이트는 아직 **자체 알림을 내주지 않는다**(2026-09-21 — 결재
-  //    대기를 포털에 내주는 일은 결재선 구조가 정리된 뒤의 다음 조각이다).
-  //    그래서 지금은 받은 것이 곧 전부다. 자체 알림이 생기면 여기서
-  //    `[...내것, ...feed.items]` 로 이어 붙이고 개수도 더한다 — 포털은 부른
-  //    사이트 자신의 알림을 빼고 주기 때문이다.
-  //
-  // 개수는 포털이 센 값 그대로 넘긴다(다시 세지 않는다 — @dss/ui README 7절).
-  // 목록이 비면 그 조각이 스스로 null 이라 머리말에 종 자체가 생기지 않는다.
+  // 🔴 자기 것이 앞, 받은 것이 뒤. 개수는 양쪽이 센 값을 더한 값이다
+  //    (다시 세지 않는다 — @dss/ui README 7절). 목록이 비면 그 조각이 스스로
+  //    null 이라 머리말에 종 자체가 생기지 않는다.
   //
   // 🔴 colorScheme 은 넘기지 않는다. 이 사이트는 globals.css 에서
   //    color-scheme: light 고정이고, 기본값 "host" 는 조상에 .dark 가 있을
   //    때만 어두워진다(메뉴바에서 한 판단과 같다).
-  return <NotificationBell items={feed.items} count={feed.count} />;
+  const bell = bellFeedWithOwnFirst({ own, received });
+  return <NotificationBell items={bell.items} count={bell.count} />;
+}
+
+/** 자기 알림이 없을 때(그리고 읽지 못했을 때)의 답. 🔴 오류가 아니다. */
+const NO_OWN: PortalNotificationFeed = { items: [], count: 0 };
+
+/**
+ * 「지금 내 차례인 휴가 결재」 — 포털이 물어 올 때 창구가 내주는 것과 **같은
+ * 값**이다. 토큰 검증과 HTTP 만 빼고 같은 길을 간다.
+ *
+ * 🔴 **던지지 않는다.** 이 종은 모든 화면에 딸려 오고 `<Suspense>` 안에 error
+ * boundary 가 없으므로, 여기서 나는 오류 하나가 화면 전체를 500 으로 만든다.
+ * 실제로 던질 수 있는 자리가 둘 있다 — DB 가 대답하지 않을 때, 그리고
+ * `env.appBaseUrl` (설정이 없으면 던지는 getter다. 임시 로그인만 쓰는 PC 에서는
+ * 자기 알림도 빠지는데, 그 PC 에는 「밖에서 이 앱에 닿는 주소」가 아예 없어
+ * 링크를 만들 수 없다).
+ *
+ * 남기는 것은 오류의 **종류 이름**뿐이다(oidc.ts 와 같은 판단 — 오류 객체를
+ * 통째로 찍으면 접속 문자열이 딸려 나올 수 있다).
+ */
+async function ownNotifications(subject: string): Promise<PortalNotificationFeed> {
+  try {
+    return await buildPortalNotificationFeed({
+      subject,
+      baseUrl: env.appBaseUrl,
+      findActor: findPortalActor,
+      listPendingApprovals: pendingApprovalNotifications,
+    });
+  } catch (error) {
+    console.error(
+      "[bell] 이 사이트의 알림을 읽지 못했습니다:",
+      error instanceof Error ? error.name : "unknown",
+    );
+    return NO_OWN;
+  }
 }

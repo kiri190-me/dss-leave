@@ -92,11 +92,11 @@ export default async function InternalLayout({ children }: { children: ReactNode
         }
         notificationBell={
           /*
-            다른 시스템들(A/S · 계측기 · 개선요청 · PO/내자)의 알림을 모아
-            그리는 종(@dss/ui). 목록은 포털이 합쳐 준다 — 부르는 자리는
-            PortalNotificationBell 안이다. 🔴 여기에 **휴가 자신의 알림은
-            없다**(포털은 부른 사이트에게는 묻지 않는다). 휴가가 제 결재
-            대기를 내주는 일은 별도 조각이다.
+            알림 종(@dss/ui). 다른 시스템들(A/S · 계측기 · 개선요청 ·
+            PO/내자)의 알림은 포털이 합쳐 주고, 🔴 **휴가 자신의 결재 대기는
+            이 사이트가 앞에 이어 붙인다** — 포털은 부른 사이트 자신의 알림을
+            빼고 답하기 때문이다(2026-09-22). 두 가지를 구해 합치는 자리는
+            PortalNotificationBell 안이다.
 
             🔴 `<Suspense>` 가 이 조각의 전부다. 이 레이아웃은 모든 화면에
             딸려 오므로, 감싸지 않으면 **모든 화면 이동이 포털 왕복만큼

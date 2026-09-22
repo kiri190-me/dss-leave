@@ -24,6 +24,10 @@
  * ============================================================================
  */
 
+// 🔴 **타입만** 가져온다. 이 파일은 DB 도 브라우저도 없이 시험이 돌아야 하고
+//    (머리말 참조) 타입 import 는 컴파일에서 사라지므로 그 성질이 유지된다.
+import type { NotificationBellItem } from "@dss/ui";
+
 import { formatRange } from "@/lib/dates";
 import { USER_ROLES, type LeaveType, type RequestKind, type UserRole } from "@/lib/db/schema";
 import type { Decider } from "./approval-scope";
@@ -209,6 +213,94 @@ export async function buildPortalNotificationFeed(params: {
     toExternalNotificationItem(row, params.baseUrl),
   );
   return { items, count: items.length };
+}
+
+/* ------------------------------------------------------------------ */
+/* 같은 답을 이 사이트의 종에도 — 자기 것을 앞에 이어 붙인다              */
+/* ------------------------------------------------------------------ */
+
+/*
+ * ── 🔴 왜 화면이 자기 알림을 **스스로** 얹는가 ──────────────────────────
+ * 포털은 **부른 사이트 자신의 알림을 빼고** 답한다(dss-auth 의 site-feed.ts 의
+ * `exceptClientId`). 남의 시스템에서 보면 「휴가 결재 대기」가 뜨는데 휴가에
+ * 와서 종을 열면 비어 있던 까닭이 그것이다. 그래서 각 사이트는 자기 것을
+ * **제 손으로** 앞에 이어 붙여야 한다.
+ *
+ * 🔴 **줄을 여기서 새로 만들지 않는다.** 위 buildPortalNotificationFeed —
+ * 포털이 물어 올 때 창구가 부르는 그 함수 — 가 만든 줄을 받아, 묶음이
+ * 요구하는 세 칸(key·sourceId·sourceName)만 채운다. 화면이 따로 계산하면
+ * 「종에 보이는 것」과 「포털에 내주는 것」이 갈라지고, 사유를 싣지 않는
+ * 약속도 한쪽에서만 지켜진다.
+ */
+
+/**
+ * 자기 알림의 `sourceId`.
+ *
+ * 포털이 주는 줄의 `sourceId` 는 그 시스템의 `client_id` 이고 열쇠는
+ * `client_id:id` 다(merge.ts). 자기 것에 우리 client_id(`dss-leave`)를 적지
+ * 않는 이유는 두 가지다.
+ *
+ *  1. 🔴 **열쇠가 부딪히지 않게** 하려고. 지금은 포털이 우리 것을 빼고 주므로
+ *     `dss-leave:…` 가 올 수 없지만, 그 판단이 바뀌는 날 열쇠가 **글자까지
+ *     같아진다** — 그러면 React 가 줄을 잘못 지운다(@dss/ui types.ts 의 `key`).
+ *     `self` 로 적어 두면 겹칠 수 있는 값 자체가 없다.
+ *  2. env 를 읽지 않으려고. `env.ssoClientId` 는 설정이 없으면 **던진다** —
+ *     이 종은 모든 화면에 딸려 오므로 그 자리를 하나도 만들지 않는다.
+ *
+ * 그릴 때는 쓰이지 않는 값이다(묶음은 `data-source-id` 에만 싣는다). 뜻은
+ * 「이 사이트 자신」이고, 어느 시스템의 식별자도 아니다.
+ */
+export const OWN_NOTIFICATION_SOURCE_ID = "self";
+
+/**
+ * 창구가 내주는 줄 하나를 **이 사이트의 종**에 얹을 모양으로.
+ *
+ * 🔴 `sourceName` 은 **빈 문자열**이다. 묶음은 비어 있으면 시스템 이름을 아예
+ * 그리지 않는다(NotificationBell 의 `hasSource`). 여기가 휴가이므로 자기 줄에
+ * 「DSS 휴가 관리」를 적는 것은 보는 사람에게 군더더기다 — 남의 시스템 줄만
+ * 이름이 붙고, 이름이 없는 줄이 곧 「여기 것」이 된다.
+ *
+ * 🔴 나머지 여섯 칸은 **손대지 않는다.** `href` 가 절대 주소인 것까지 그대로
+ * 둔다 — 통합 로그인으로 들어오면 브라우저가 서 있는 자리가 바로 그 주소이고
+ * (SSO_REDIRECT_URI 의 origin), 무엇보다 여기서 주소를 다시 만들면 「종에 보이는
+ * 링크」와 「포털에 내주는 링크」가 두 갈래가 된다.
+ */
+export function toOwnBellItem(item: ExternalNotificationItem): NotificationBellItem {
+  return {
+    ...item,
+    key: `${OWN_NOTIFICATION_SOURCE_ID}:${item.id}`,
+    sourceId: OWN_NOTIFICATION_SOURCE_ID,
+    sourceName: "",
+  };
+}
+
+/** 종에 그대로 넘길 값. 칸 이름은 @dss/ui 의 NotificationBellProps 그대로다. */
+export type BellFeed = {
+  items: NotificationBellItem[];
+  count: number;
+};
+
+/**
+ * 자기 것 + 포털이 준 것.
+ *
+ * 🔴 **자기 것이 앞, 받은 것이 뒤.** 받은 목록의 차례는 포털이 이미 정해 둔
+ * 것이라 다시 섞지 않는다(merge.ts).
+ *
+ * 🔴 개수는 **양쪽이 센 값을 더하기만** 한다. 줄 수로 다시 세지 않는다 — 세는
+ * 규칙이 시스템마다 다르고(A/S 는 같은 대상을 한 번만 센다), 다시 세면 각
+ * 시스템의 종과 이 종이 서로 다른 숫자를 말한다. 포털도 같은 이유로 더하기만
+ * 한다(@dss/ui README 7절).
+ */
+export function bellFeedWithOwnFirst(params: {
+  /** 창구가 내주는 그 값 그대로(buildPortalNotificationFeed). */
+  own: PortalNotificationFeed;
+  /** 포털이 준 것 — 이미 @dss/ui 의 아홉 칸이다(oidc.ts 가 걸러 둔 값). */
+  received: { items: readonly NotificationBellItem[]; count: number };
+}): BellFeed {
+  return {
+    items: [...params.own.items.map(toOwnBellItem), ...params.received.items],
+    count: params.own.count + params.received.count,
+  };
 }
 
 /* ------------------------------------------------------------------ */
