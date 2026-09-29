@@ -17,7 +17,17 @@
  *
  *   DATABASE_URL="…/dss_leave_test" npm run seed:ranks
  */
-process.loadEnvFile(".env.local");
+
+// .env.local 이 없어도 죽지 않는다 — NAS 의 도구 컨테이너에는 그 파일이 아예 없다
+// (.dockerignore 가 .env* 를 막는다). 운영에서는 DATABASE_URL 을 컨테이너 환경변수로
+// 받는다. 개발 PC 에서는 파일이 있으므로 예전처럼 읽는다.
+// 값이 정말로 없으면 아래 `../src/lib/db` 를 불러오는 순간 env.ts 가 분명한 오류로
+// 죽인다 — 조용히 넘어가지 않는다. (drizzle.config.ts 도 같은 모양이다.)
+try {
+  process.loadEnvFile(".env.local");
+} catch {
+  // 파일이 없을 때만 지나간다.
+}
 
 async function main() {
   // .env.local 을 읽은 뒤에 불러와야 DB 주소가 잡힌다

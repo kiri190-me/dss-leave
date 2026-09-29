@@ -104,12 +104,23 @@ COPY --chown=app:app drizzle ./drizzle
 # 🔴 스키마나 코드를 서브모듈로 더 옮기면, **옮긴 곳이 여기 담기는지 먼저 본다.**
 COPY --chown=app:app vendor ./vendor
 
-# scripts/ 는 담지 않는다. 운영에서 부르고 싶은 것이 하나 있지만(seed:ranks —
-# 직급이 없으면 직원을 한 명도 못 넣는다) scripts/seed-ranks.ts 가 맨 윗줄에서
-# `process.loadEnvFile(".env.local")` 을 try 없이 부른다. .dockerignore 가 .env* 를
-# 막아 컨테이너에는 그 파일이 없고, 환경변수로 DATABASE_URL 을 넣어 줘도 그 줄에서
-# 먼저 죽는다(drizzle.config.ts 는 같은 호출을 try/catch 로 감싸 두어 괜찮다).
-# 담아 봐야 돌지 않으므로 담지 않는다 — 그 스크립트를 고치는 일은 따로 한다.
+# scripts/ 도 담는다. 🔴 **첫 설치에 반드시 부른다** — seed:ranks 다.
+#
+#   docker compose … run --rm tools-leave npm run seed:ranks
+#
+# 직급(web_ranks)이 비어 있으면 직원을 한 명도 등록할 수 없다 — 직원 추가 화면의
+# 직급 칸이 필수인데 고를 것이 없어 거기서 막힌다(CLAUDE.md, 2026-09-21 실제로
+# 막혔다). 그러니 마이그레이션만으로는 운영을 시작할 수 없고, 이 이미지가
+# db:migrate 와 seed:ranks 를 **둘 다** 부를 수 있어야 한다.
+# seed:ranks 는 직급만 넣고 여러 번 돌려도 중복이 생기지 않아 운영 DB 에 돌린다
+# (가짜 사람까지 넣는 seed:dev 와는 다른 스크립트다 — 그것은 부르지 않는다).
+#
+# ⚠️ scripts/ 안의 다른 파일들은 아직 맨 윗줄에서 `process.loadEnvFile(".env.local")`
+#    을 try 없이 부른다(seed-dev · seed-dummy-approval · test-workflow 셋). 컨테이너에는
+#    .env.local 이 없으니 그것들은 여기서 부르면 그 줄에서 죽는다. 개발·시험 전용이라
+#    그대로 두었다 — 운영에서 부를 일이 없다. seed-ranks.ts 만 try/catch 로 고쳤다
+#    (2026-09-29). 나중에 운영에서 부를 스크립트가 늘면 그 파일도 같이 고친다.
+COPY --chown=app:app scripts ./scripts
 
 USER app
 
