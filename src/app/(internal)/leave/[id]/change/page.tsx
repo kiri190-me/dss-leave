@@ -40,8 +40,11 @@ export default async function ChangeLeavePage({ params }: { params: Promise<{ id
     approvalChainFor(member.employee),
     getBalance(member.employee),
   ]);
-  // 변경이 승인되면 원래 휴가만큼 돌려받으므로 그만큼 더 쓸 수 있다
+  // 변경이 승인되면 원래 휴가만큼 돌려받으므로 그만큼 더 쓸 수 있다.
+  // 🔴 돌려받는 곳은 **그 휴가가 빠졌던 주머니**다 — 연차와 여름휴가를 섞지 않는다.
+  const pool = LEAVE_TYPE_INFO[req.leaveType].pool;
   const available = balance.available + (req.deducts ? req.days : 0);
+  const summerAvailable = balance.summer.remaining + (pool === "SUMMER" ? req.days : 0);
 
   return (
     <section className="max-w-3xl rounded-lg border border-slate-200 bg-white p-6">
@@ -58,6 +61,7 @@ export default async function ChangeLeavePage({ params }: { params: Promise<{ id
         holidays={holidays.map((h) => h.day)}
         chainNames={chain.map((r) => r.name)}
         available={available}
+        summerAvailable={summerAvailable}
         today={today}
         initial={{
           targetId: req.id,

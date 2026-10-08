@@ -34,6 +34,8 @@ export type AuditAction =
   | "RANK_CREATE"
   | "RANK_UPDATE"
   | "RANK_DELETE"
+  /** 회사 전체 휴가 설정을 고침 (여름휴가 일수) */
+  | "LEAVE_SETTINGS_UPDATE"
   | "TENURE_RULE_CREATE"
   | "TENURE_RULE_UPDATE"
   | "TENURE_RULE_DELETE"

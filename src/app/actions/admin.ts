@@ -16,12 +16,14 @@ import { isUuid } from "@/lib/ids";
 import {
   ADJUSTMENT_BUCKETS,
   HOLIDAY_KINDS,
+  LEAVE_SETTINGS_ROW_ID,
   USER_ROLES,
   webApprovalRouteSteps,
   webEmployees,
   webHolidays,
   webLeaveAdjustments,
   webLeaveRequests,
+  webLeaveSettings,
   webRanks,
   webTenureRules,
   webUsers,
@@ -29,7 +31,7 @@ import {
   type HolidayKind,
   type UserRole,
 } from "@/lib/db/schema";
-import { loadHolidaySet } from "@/lib/leave/data";
+import { loadHolidaySet, loadLeaveSettings } from "@/lib/leave/data";
 import { LEAVE_TYPE_INFO, isWorkday, workdaysBetween } from "@/lib/leave/rules";
 
 function text(formData: FormData, key: string, max = 200): string {
@@ -725,6 +727,43 @@ export async function moveRouteStepAction(
     entityType: "approval_route",
   });
   return done("결재선 순서를 바꿨습니다.");
+}
+
+/* ------------------------------------------------------------------ */
+/* 회사 전체 휴가 설정 — 여름휴가 일수                                    */
+/* 🔴 사람마다·해마다 다르지 않다. 표에 줄이 하나뿐이다                    */
+/* ------------------------------------------------------------------ */
+
+export async function saveLeaveSettingsAction(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const admin = await requireAdmin();
+  const summerDays = int(formData, "summerDays");
+  // 🔴 여름휴가에 반차가 없으므로 **하루 단위**만 받는다 (0.5일을 막는다).
+  if (summerDays == null || summerDays < 0 || summerDays > 60) {
+    return { error: "여름휴가 일수는 0~60 사이의 정수로 적어 주세요." };
+  }
+
+  const before = (await loadLeaveSettings()).summerDays;
+  if (before === summerDays) return done("그대로입니다.");
+
+  await db
+    .insert(webLeaveSettings)
+    .values({ id: LEAVE_SETTINGS_ROW_ID, summerDays })
+    .onConflictDoUpdate({
+      target: webLeaveSettings.id,
+      set: { summerDays, updatedAt: new Date() },
+    });
+
+  await writeAudit({
+    actor: admin.user,
+    action: "LEAVE_SETTINGS_UPDATE",
+    summary: `여름휴가 일수 ${before}일 → ${summerDays}일`,
+    entityType: "leave_settings",
+    changes: { summerDays: { from: before, to: summerDays } },
+  });
+  return done(`여름휴가를 연 ${summerDays}일로 저장했습니다.`);
 }
 
 /* ------------------------------------------------------------------ */

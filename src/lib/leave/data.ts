@@ -16,6 +16,7 @@ import {
   webHolidays,
   webLeaveAdjustments,
   webLeaveRequests,
+  webLeaveSettings,
   webRanks,
   webTenureRules,
   type ApprovalStep,
@@ -26,6 +27,8 @@ import {
 import { myStepCondition, type Decider } from "./approval-scope";
 import { approvalTurnLabel } from "./labels";
 import {
+  DEFAULT_SUMMER_DAYS,
+  SUMMER_LEAVE_TYPES,
   approversAfter,
   balanceOn,
   expandLeaveDays,
@@ -79,6 +82,20 @@ export async function loadRules(): Promise<TenureRuleRow[]> {
   return rows;
 }
 
+/**
+ * 회사 전체 휴가 설정. **한 줄짜리 표**다 (사람마다·해마다 다르지 않다).
+ *
+ * 🔴 줄이 아직 없으면 기본값을 돌려준다 — 운영 시작 전이라 표가 비어 있어도
+ * 잔액 계산과 화면이 그대로 돌아가야 한다. 기본값은 rules.ts 한 곳에 있다.
+ */
+export async function loadLeaveSettings(q: Q = db): Promise<{ summerDays: number }> {
+  const [row] = await q
+    .select({ summerDays: webLeaveSettings.summerDays })
+    .from(webLeaveSettings)
+    .limit(1);
+  return { summerDays: row?.summerDays ?? DEFAULT_SUMMER_DAYS };
+}
+
 export async function loadRanks(): Promise<Rank[]> {
   return db
     .select()
@@ -95,10 +112,11 @@ export async function loadLedgerInput(
   employee: { id: string; hireDate: string },
   holidays: ReadonlySet<string>,
   rules: readonly TenureRuleRow[],
-  opts: { excludeRequestIds?: string[]; q?: Q } = {},
+  opts: { excludeRequestIds?: string[]; q?: Q; summerDays?: number } = {},
 ): Promise<LedgerInput> {
   const q = opts.q ?? db;
   const exclude = opts.excludeRequestIds ?? [];
+  const summerDays = opts.summerDays ?? (await loadLeaveSettings(q)).summerDays;
 
   const requests = await q
     .select()
@@ -107,7 +125,12 @@ export async function loadLedgerInput(
       and(
         eq(webLeaveRequests.employeeId, employee.id),
         eq(webLeaveRequests.isDeleted, false),
-        eq(webLeaveRequests.deducts, true),
+        // 어느 주머니에선가 빠지는 휴가만. 연차 쪽은 저장된 deducts 로 가르고,
+        // 여름휴가는 **제 잔액**이라 그 칸이 false 다 — 종류로 함께 집어 온다.
+        or(
+          eq(webLeaveRequests.deducts, true),
+          inArray(webLeaveRequests.leaveType, SUMMER_LEAVE_TYPES),
+        ),
         inArray(webLeaveRequests.kind, [...LIVE_KINDS]),
         // 날짜 변경 신청은 승인되기 전까지 잔여에 넣지 않는다 (원래 휴가가 아직 살아 있다)
         or(
@@ -142,6 +165,7 @@ export async function loadLedgerInput(
     rules,
     annualAdjust,
     monthlyAdjust,
+    summerDays,
     days: requests
       .filter((r) => !exclude.includes(r.id))
       .flatMap((r) => expandLeaveDays(r, r.status === "PENDING", holidays)),
@@ -151,12 +175,19 @@ export async function loadLedgerInput(
 /** 잔여 일수. on 을 주면 그날 기준 (예: 지난해 인쇄는 12월 31일 기준) */
 export async function getBalance(
   employee: { id: string; hireDate: string },
-  ctx?: { holidays: ReadonlySet<string>; rules: readonly TenureRuleRow[] },
+  ctx?: {
+    holidays: ReadonlySet<string>;
+    rules: readonly TenureRuleRow[];
+    /** 여러 사람의 잔액을 줄줄이 셀 때 한 번만 읽어 넘기면 된다 */
+    summerDays?: number;
+  },
   on?: string,
 ): Promise<Balance> {
   const holidays = ctx?.holidays ?? (await loadHolidaySet());
   const rules = ctx?.rules ?? (await loadRules());
-  const input = await loadLedgerInput(employee, holidays, rules);
+  const input = await loadLedgerInput(employee, holidays, rules, {
+    summerDays: ctx?.summerDays,
+  });
   return balanceOn(input, on ?? todayKst());
 }
 

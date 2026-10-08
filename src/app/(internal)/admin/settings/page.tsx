@@ -5,6 +5,7 @@ import {
   deleteHolidayAction,
   deleteRankAction,
   deleteTenureRuleAction,
+  saveLeaveSettingsAction,
   saveRankAction,
   saveTenureRuleAction,
 } from "@/app/actions/admin";
@@ -17,6 +18,7 @@ import { webTenureRules } from "@/lib/db/schema";
 import {
   loadApprovalRoute,
   loadHolidays,
+  loadLeaveSettings,
   loadRanks,
   loadRouteCandidates,
 } from "@/lib/leave/data";
@@ -39,7 +41,7 @@ export default async function SettingsPage({
   const yearParam = typeof sp.year === "string" ? Number(sp.year) : NaN;
   const year = Number.isInteger(yearParam) && yearParam >= 2000 && yearParam <= 2100 ? yearParam : thisYear;
 
-  const [rules, ranks, holidays, route, routeCandidates] = await Promise.all([
+  const [rules, ranks, holidays, route, routeCandidates, settings] = await Promise.all([
     db
       .select()
       .from(webTenureRules)
@@ -49,6 +51,7 @@ export default async function SettingsPage({
     loadHolidays(`${year}-01-01`, `${year}-12-31`),
     loadApprovalRoute(),
     loadRouteCandidates(),
+    loadLeaveSettings(),
   ]);
 
   return (
@@ -96,6 +99,34 @@ export default async function SettingsPage({
           <span className="text-sm text-slate-500">일</span>
           <button type="submit" className={addBtn}>
             줄 추가
+          </button>
+        </ActionForm>
+      </section>
+
+      {/* 여름휴가 — 회사 전체 하나. 사람마다·해마다 다르지 않다 */}
+      <section className="rounded-lg border border-slate-200 bg-white p-4">
+        <h2 className="text-sm font-semibold text-slate-800">여름휴가</h2>
+        <p className="mb-3 mt-0.5 text-xs text-slate-500">
+          모든 직원이 해마다 받는 일수입니다. <b>연차와 따로 셉니다</b> — 여름휴가를 써도 연차는
+          줄지 않습니다. 하루 단위로만 쓰고(반차 없음), 못 쓴 날은 넘어가지 않습니다.
+          세는 기간은 <b>연차와 같습니다</b> (사람마다 자기 입사 기념일 ~ 다음 기념일 전날).
+          값을 바꾸면 <b>모든 직원의 올해 남은 여름휴가가 함께 바뀝니다.</b>
+        </p>
+        <ActionForm action={saveLeaveSettingsAction} className="flex flex-wrap items-center gap-2">
+          <span className="text-sm text-slate-500">직원 1명당 연</span>
+          <input
+            name="summerDays"
+            type="number"
+            min={0}
+            max={60}
+            step={1}
+            required
+            defaultValue={settings.summerDays}
+            className={`w-20 ${input}`}
+          />
+          <span className="text-sm text-slate-500">일</span>
+          <button type="submit" className={saveBtn}>
+            저장
           </button>
         </ActionForm>
       </section>

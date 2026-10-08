@@ -296,19 +296,25 @@ export async function submitLeave(
     );
   }
 
-  // 남은 일수가 모자라지 않는가
-  if (info.deducts) {
+  // 남은 일수가 모자라지 않는가.
+  // 🔴 잔액이 있는 휴가는 연차·여름휴가 둘이다 (pool 이 null 이면 잔액이 없다).
+  // 세는 길은 하나다 — expandLeaveDays 가 주머니를 붙여 주고 allocate 가 그
+  // 주머니에서만 뺀다. 여름휴가가 모자라도 연차에서 메우지 않는다.
+  if (info.pool !== null) {
     const rules = await loadRules();
     const ledger = await loadLedgerInput(member.employee, holidays, rules, {
       excludeRequestIds: target ? [target.id] : [],
     });
     const added = expandLeaveDays(
-      { id: "__new__", leaveType, startDate, endDate, deducts: true },
+      { id: "__new__", leaveType, startDate, endDate, deducts: info.deducts },
       true,
       holidays,
     );
     const short = shortageIfAdded(ledger, added);
-    if (short > 0) return fail(`남은 휴가가 ${short}일 모자랍니다.`);
+    if (short > 0) {
+      const what = info.pool === "SUMMER" ? "남은 여름휴가" : "남은 휴가";
+      return fail(`${what}가 ${short}일 모자랍니다.`);
+    }
   }
 
   const result = await db.transaction(async (tx) => {

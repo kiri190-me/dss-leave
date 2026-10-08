@@ -13,6 +13,9 @@
  * - 못 쓴 연차는 다음 입사 기념일 전날에 사라진다. 넘어가지 않는다.
  * - 휴가는 먼저 사라질 일수부터 차감한다.
  * - 여러 날 휴가는 주말·공휴일·회사 휴무일을 빼고 센다.
+ * - 여름휴가(2026-10-08 추가)는 **연차와 별개인 제 잔액**이다. 회사 전체 하나인
+ *   설정값(기본 3일)에서 빠지고 연차를 깎지 않는다. 반차가 없고 이월하지 않으며,
+ *   해를 가르는 기준은 **연차와 같다**(입사 기념일 ~ 다음 기념일 전날).
  */
 import type { LeaveType, StepStatus } from "@/lib/db/schema";
 import {
@@ -28,18 +31,61 @@ import {
 /* 휴가 종류                                                            */
 /* ------------------------------------------------------------------ */
 
+/**
+ * 그 휴가가 **어느 잔액**에서 빠지는가. 성질이 셋이다 (2026-10-08 여름휴가가
+ * 들어오면서 둘에서 셋이 됐다).
+ *
+ * - `"ANNUAL"` — 연차 주머니(모자라면 월차). 연차·오전 반차·오후 반차.
+ * - `"SUMMER"` — 여름휴가 주머니. 🔴 **연차와 별개인 제 잔액**이라 연차를 깎지
+ *   않는다. 회사 전체 하나인 설정값(연 N일)에서 빠진다.
+ * - `null` — 어느 잔액에서도 빠지지 않는다. 경조사·건강검진·예비군·기타.
+ *
+ * `deducts` 는 **「연차에서 빠지는가」** 그대로다 (web_leave_requests.deducts 에
+ * 그대로 저장된다). 여름휴가는 연차를 깎지 않으므로 `false` 다 — 두 칸이
+ * 같은 말을 하지 않는다는 뜻이고, 그래서 주머니는 `pool` 로 따로 적는다.
+ */
+export type LeavePool = "ANNUAL" | "SUMMER" | null;
+
 export const LEAVE_TYPE_INFO: Record<
   LeaveType,
-  { label: string; deducts: boolean; halfDay: boolean }
+  { label: string; deducts: boolean; halfDay: boolean; pool: LeavePool }
 > = {
-  ANNUAL: { label: "연차", deducts: true, halfDay: false },
-  AM_HALF: { label: "오전 반차", deducts: true, halfDay: true },
-  PM_HALF: { label: "오후 반차", deducts: true, halfDay: true },
-  CONDOLENCE: { label: "경조사", deducts: false, halfDay: false },
-  HEALTH_CHECK: { label: "건강검진", deducts: false, halfDay: false },
-  RESERVE: { label: "예비군·민방위", deducts: false, halfDay: false },
-  OTHER: { label: "기타", deducts: false, halfDay: false },
+  ANNUAL: { label: "연차", deducts: true, halfDay: false, pool: "ANNUAL" },
+  AM_HALF: { label: "오전 반차", deducts: true, halfDay: true, pool: "ANNUAL" },
+  PM_HALF: { label: "오후 반차", deducts: true, halfDay: true, pool: "ANNUAL" },
+  // 🔴 여름휴가에 반차는 없다 (사용자 결정 2026-10-08) — halfDay: false 고정
+  SUMMER: { label: "여름휴가", deducts: false, halfDay: false, pool: "SUMMER" },
+  CONDOLENCE: { label: "경조사", deducts: false, halfDay: false, pool: null },
+  HEALTH_CHECK: { label: "건강검진", deducts: false, halfDay: false, pool: null },
+  RESERVE: { label: "예비군·민방위", deducts: false, halfDay: false, pool: null },
+  OTHER: { label: "기타", deducts: false, halfDay: false, pool: null },
 };
+
+/**
+ * 여름휴가 기본 일수 — **설정이 없을 때** 쓰는 값 (사용자 결정 2026-10-08: 모든
+ * 직원 연 3일). 설정 표가 비어 있어도 화면이 깨지지 않게 여기 한 곳에 둔다.
+ */
+export const DEFAULT_SUMMER_DAYS = 3;
+
+/**
+ * 여름휴가 주머니에서 빠지는 종류. DB 질의가 종류 이름을 손으로 적지 않도록
+ * LEAVE_TYPE_INFO 에서 뽑는다 (종류가 늘어도 질의를 고칠 일이 없다).
+ */
+export const SUMMER_LEAVE_TYPES = (
+  Object.keys(LEAVE_TYPE_INFO) as LeaveType[]
+).filter((t) => LEAVE_TYPE_INFO[t].pool === "SUMMER");
+
+/**
+ * 이 신청이 빠지는 주머니.
+ *
+ * 🔴 연차 쪽 판정은 **예전 그대로 저장된 `deducts` 값**으로 가른다 — 종류로
+ * 다시 세면 옛 행이나 관리자가 손본 행의 뜻이 조용히 달라진다. 여름휴가만
+ * 종류로 가른다(그 칸은 `false` 라 저장값으로는 알 수 없다).
+ */
+export function poolOf(req: { leaveType: LeaveType; deducts: boolean }): LeavePool {
+  if (LEAVE_TYPE_INFO[req.leaveType].pool === "SUMMER") return "SUMMER";
+  return req.deducts ? "ANNUAL" : null;
+}
 
 /** 한 번에 신청할 수 있는 가장 긴 기간(달력 기준 일수) */
 export const MAX_SPAN_DAYS = 60;
@@ -271,6 +317,11 @@ export type LeaveDay = {
   requestId: string;
   /** 결재 대기 중인가 */
   pending: boolean;
+  /**
+   * 어느 주머니에서 빼는가. 적지 않으면 **연차**다 — 여름휴가가 생기기 전부터
+   * 있던 자리(시험 예시 등)가 그대로 돌아간다.
+   */
+  pool?: Exclude<LeavePool, null>;
 };
 
 export type LedgerInput = {
@@ -280,6 +331,11 @@ export type LedgerInput = {
   annualAdjust: ReadonlyMap<number, number>;
   /** 월차 조정 합계 */
   monthlyAdjust: number;
+  /**
+   * 여름휴가 일수 (회사 전체 하나, 연 N일). 🔴 사람마다·해마다 다르지 않다.
+   * 없으면 DEFAULT_SUMMER_DAYS.
+   */
+  summerDays?: number;
   /** 차감 대상 휴가 하루하루 (승인 + 대기) */
   days: readonly LeaveDay[];
 };
@@ -289,12 +345,23 @@ type Usage = { used: number; pending: number };
 export type Allocation = {
   annual: Map<number, Usage>;
   monthly: Usage;
+  /**
+   * 여름휴가. 🔴 **연차 연도별**이다 — 해를 가르는 기준이 연차와 같기 때문에
+   * 연차와 똑같이 `leaveYearOf` 로 묶는다 (사람마다 기간이 다르다).
+   */
+  summer: Map<number, Usage>;
   /** 주머니가 모자라 빼지 못한 일수 (신청 건별) */
   shortByRequest: Map<string, number>;
   shortTotal: number;
 };
 
-/** 휴가 하루를 펼친다. 차감 없는 휴가는 빈 배열 */
+/**
+ * 휴가 하루를 펼친다. 어느 잔액에서도 빠지지 않는 휴가(경조사 등)는 빈 배열.
+ *
+ * 🔴 **세는 길은 하나다** — 여름휴가도 연차와 똑같이 여기서 펼쳐
+ * (주말·공휴일을 빼고) 날짜마다 한 줄이 된다. 다른 점은 붙여 두는 주머니
+ * 이름(`pool`)뿐이다.
+ */
 export function expandLeaveDays(
   req: {
     id: string;
@@ -306,16 +373,18 @@ export function expandLeaveDays(
   pending: boolean,
   holidays: ReadonlySet<string>,
 ): LeaveDay[] {
-  if (!req.deducts) return [];
+  const pool = poolOf(req);
+  if (pool === null) return [];
   const info = LEAVE_TYPE_INFO[req.leaveType];
   if (info.halfDay) {
-    return [{ date: req.startDate, amount: 0.5, requestId: req.id, pending }];
+    return [{ date: req.startDate, amount: 0.5, requestId: req.id, pending, pool }];
   }
   return workdaysBetween(req.startDate, req.endDate, holidays).map((date) => ({
     date,
     amount: 1,
     requestId: req.id,
     pending,
+    pool,
   }));
 }
 
@@ -324,12 +393,22 @@ export function annualTotal(input: LedgerInput, year: number): number {
   return round1(base + (input.annualAdjust.get(year) ?? 0));
 }
 
+/**
+ * 한 연차 연도에 쓸 수 있는 여름휴가 일수.
+ * 회사 전체 하나이고 해마다 같다 — 이월하지 않으므로 해가 바뀌면 그대로 다시 N일.
+ */
+export function summerTotal(input: LedgerInput): number {
+  return round1(input.summerDays ?? DEFAULT_SUMMER_DAYS);
+}
+
 export function allocate(input: LedgerInput): Allocation {
   const monthly = monthlyInfo(input.hireDate);
   const annual = new Map<number, Usage>();
   const monthlyUsage: Usage = { used: 0, pending: 0 };
+  const summer = new Map<number, Usage>();
   const shortByRequest = new Map<string, number>();
   const annualAllocated = new Map<number, number>();
+  const summerAllocated = new Map<number, number>();
   let monthlyAllocated = 0;
 
   const sorted = [...input.days].sort(
@@ -341,7 +420,31 @@ export function allocate(input: LedgerInput): Allocation {
 
   for (const day of sorted) {
     let need = day.amount;
+    // 🔴 여름휴가도 **이 한 줄을 그대로 쓴다** — 해를 가르는 기준이 연차와 같다
+    //    (입사 기념일 ~ 다음 기념일 전날, 사람마다 다른 그 기간).
     const year = leaveYearOf(input.hireDate, day.date);
+
+    // 여름휴가는 연차·월차와 **다른 주머니**다. 연차를 깎지 않고, 연차가
+    // 모자라도 여기서 메우지 않는다. 이월이 없어 해마다 다시 설정값만큼 찬다.
+    if (day.pool === "SUMMER") {
+      const avail = round1(summerTotal(input) - (summerAllocated.get(year) ?? 0));
+      const take = Math.min(need, Math.max(0, avail));
+      if (take > 0) {
+        summerAllocated.set(year, round1((summerAllocated.get(year) ?? 0) + take));
+        const u = summer.get(year) ?? { used: 0, pending: 0 };
+        if (day.pending) u.pending = round1(u.pending + take);
+        else u.used = round1(u.used + take);
+        summer.set(year, u);
+      }
+      need = round1(need - take);
+      if (need > 0) {
+        shortByRequest.set(
+          day.requestId,
+          round1((shortByRequest.get(day.requestId) ?? 0) + need),
+        );
+      }
+      continue;
+    }
 
     const candidates: { kind: "MONTHLY" | "ANNUAL"; expiry: string; avail: number }[] = [];
 
@@ -394,7 +497,7 @@ export function allocate(input: LedgerInput): Allocation {
   let shortTotal = 0;
   for (const v of shortByRequest.values()) shortTotal = round1(shortTotal + v);
 
-  return { annual, monthly: monthlyUsage, shortByRequest, shortTotal };
+  return { annual, monthly: monthlyUsage, summer, shortByRequest, shortTotal };
 }
 
 /* ------------------------------------------------------------------ */
@@ -423,7 +526,22 @@ export type Balance = {
     remaining: number;
     nextAccrual: string | null;
   } | null;
-  /** 지금 더 신청할 수 있는 일수 (결재 대기분을 미리 뺀 값) */
+  /**
+   * 여름휴가 (2026-10-08 추가). 🔴 **연차와 별개인 제 잔액**이라 연차를 깎지
+   * 않는다. 기간은 연차와 **같다** — `year` 와 `annual.entitlement.start~end`
+   * 가 그대로 이 주머니의 기간이다(사람마다 다르다). 이월하지 않는다.
+   */
+  summer: {
+    /** 회사 전체 설정값. 설정이 없으면 DEFAULT_SUMMER_DAYS */
+    total: number;
+    used: number;
+    pending: number;
+    remaining: number;
+  };
+  /**
+   * 지금 더 신청할 수 있는 **연차** 일수 (결재 대기분을 미리 뺀 값).
+   * 🔴 여름휴가는 여기 더하지 않는다 — 다른 주머니라 연차 신청에 쓸 수 없다.
+   */
   available: number;
   /** 주머니가 모자라 빼지 못한 일수. 0 이 아니면 관리자 확인 필요 */
   shortTotal: number;
@@ -457,6 +575,17 @@ export function balanceOn(input: LedgerInput, today: string): Balance {
     };
   }
 
+  // 여름휴가. 🔴 연차 연도(year)를 **그대로** 쓴다 — 위에서 leaveYearOf 로 고른
+  // 그 해다. 기준을 베껴 두면 한쪽만 고쳐질 수 있어 값 하나를 함께 쓴다.
+  const summerUsage = alloc.summer.get(year) ?? { used: 0, pending: 0 };
+  const summerDays = summerTotal(input);
+  const summer = {
+    total: summerDays,
+    used: summerUsage.used,
+    pending: summerUsage.pending,
+    remaining: round1(summerDays - summerUsage.used - summerUsage.pending),
+  };
+
   const available = round1(
     Math.max(0, annualRemaining) + Math.max(0, monthly?.remaining ?? 0),
   );
@@ -473,6 +602,7 @@ export function balanceOn(input: LedgerInput, today: string): Balance {
       remaining: annualRemaining,
     },
     monthly,
+    summer,
     available,
     shortTotal: alloc.shortTotal,
   };

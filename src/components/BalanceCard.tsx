@@ -12,7 +12,7 @@ export function BalanceCard({
   title?: string;
   detailed?: boolean;
 }) {
-  const { annual, monthly } = balance;
+  const { annual, monthly, summer } = balance;
   const ent = annual.entitlement;
 
   return (
@@ -51,6 +51,28 @@ export function BalanceCard({
           {ent.status === "NO_RULE" && (
             <dd className="mt-1 text-xs text-red-700">
               근속 표에 {ent.tenureYears}년차 일수가 없습니다. 휴가 관리자에게 알려 주세요.
+            </dd>
+          )}
+        </div>
+
+        {/*
+          여름휴가 — 🔴 연차 **바로 아래**. 연차와 별개인 제 잔액이라
+          위의 「더 신청할 수 있음」(연차+월차)에는 들어가지 않는다.
+          기간은 연차와 같아 따로 적지 않고 머리말의 「○○년 연차」를 함께 쓴다.
+        */}
+        <div className="rounded-md bg-slate-50 px-3 py-2">
+          <dt className="flex items-center justify-between font-medium text-slate-700">
+            <span>여름휴가</span>
+            <span className="tabular">{formatDays(Math.max(0, summer.remaining))} 남음</span>
+          </dt>
+          <dd className="mt-0.5 text-xs text-slate-500">
+            받은 {formatDays(summer.total)} · 사용 {formatDays(summer.used)}
+            {summer.pending > 0 && <> · 결재 대기 {formatDays(summer.pending)}</>}
+          </dd>
+          <dd className="mt-0.5 text-xs text-slate-500">연차와 따로 셉니다 (연차를 깎지 않습니다).</dd>
+          {detailed && (
+            <dd className="mt-0.5 text-xs text-slate-500">
+              못 쓴 여름휴가는 연차와 같이 {formatDay(ent.end, true)}에 사라지고 넘어가지 않습니다.
             </dd>
           )}
         </div>

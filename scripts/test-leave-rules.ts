@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { PgDialect } from "drizzle-orm/pg-core";
 
 import { addMonths, fullMonths, calendarWeeks } from "../src/lib/dates";
-import type { StepStatus } from "../src/lib/db/schema";
+import { LEAVE_TYPES, type StepStatus } from "../src/lib/db/schema";
 import { japanHolidays } from "../src/lib/jp-holidays";
 import {
   canOpenApprovalBox,
@@ -17,6 +17,9 @@ import {
 } from "../src/lib/leave/approval-scope";
 import { approvalTurnLabel } from "../src/lib/leave/labels";
 import {
+  DEFAULT_SUMMER_DAYS,
+  LEAVE_TYPE_INFO,
+  SUMMER_LEAVE_TYPES,
   allocate,
   anniversaryIn,
   annualEntitlement,
@@ -31,6 +34,7 @@ import {
   liveApprovers,
   monthlyAccruedOn,
   monthlyInfo,
+  poolOf,
   shortageIfAdded,
   spansOverlap,
   type LedgerInput,
@@ -221,6 +225,185 @@ check("못 쓴 연차는 다음 입사 기념일 전날에 사라진다", () => 
   assert.equal(after.year, 2028);
   assert.equal(after.annual.used, 0);
   assert.equal(after.annual.remaining, 11); // 남았던 10일은 넘어오지 않는다
+});
+
+/* ------------------------------------------------------------------ */
+/* 여름휴가 (2026-10-08) — 연차와 별개인 셋째 주머니                      */
+/* ------------------------------------------------------------------ */
+
+/** 근속 표에 걸리지 않게 넓게 깔아 둔 표 (연차 10일 고정) */
+const wideRules = [{ fromYear: 1, toYear: 40, days: 10 }];
+
+/** 여름휴가 신청 하루하루. 🔴 연차와 **같은 길**(expandLeaveDays)로 센다 */
+const summerDaysOf = (start: string, end: string, pending = false, id = "s") =>
+  expandLeaveDays(
+    { id, leaveType: "SUMMER", startDate: start, endDate: end, deducts: false },
+    pending,
+    noHolidays,
+  );
+
+/** 2020-03-15 입사 (연차 연도: 3/15 ~ 다음 해 3/14) */
+const summerInput = (
+  days: LedgerInput["days"],
+  summerDays?: number,
+  hireDate = "2020-03-15",
+): LedgerInput => ({
+  hireDate,
+  rules: wideRules,
+  annualAdjust: new Map(),
+  monthlyAdjust: 0,
+  summerDays,
+  days,
+});
+
+check("🔴 여름휴가는 연차를 깎지 않는다", () => {
+  const b = balanceOn(summerInput(summerDaysOf("2027-08-02", "2027-08-04")), "2027-08-10");
+  assert.equal(b.summer.used, 3);
+  assert.equal(b.summer.remaining, 0);
+  // 연차 쪽은 손대지 않았다 — 받은 10일이 그대로 남아 있다
+  assert.equal(b.annual.total, 10);
+  assert.equal(b.annual.used, 0);
+  assert.equal(b.annual.pending, 0);
+  assert.equal(b.annual.remaining, 10);
+  // 「더 신청할 수 있음」(연차+월차)에도 여름휴가를 섞지 않는다
+  assert.equal(b.available, 10);
+  assert.equal(b.shortTotal, 0);
+});
+
+check("🔴 설정이 없으면 여름휴가는 3일", () => {
+  assert.equal(DEFAULT_SUMMER_DAYS, 3);
+  const b = balanceOn(summerInput([]), "2027-08-10"); // summerDays 를 주지 않았다
+  assert.equal(b.summer.total, 3);
+  assert.equal(b.summer.remaining, 3);
+});
+
+check("남은 여름휴가는 설정값에서 쓴 만큼 줄어든다 (결재 대기분도 미리 뺀다)", () => {
+  const b = balanceOn(
+    summerInput(
+      [
+        ...summerDaysOf("2027-08-02", "2027-08-02", false, "쓴것"),
+        ...summerDaysOf("2027-08-05", "2027-08-05", true, "대기"),
+      ],
+      5,
+    ),
+    "2027-08-10",
+  );
+  assert.equal(b.summer.total, 5);
+  assert.equal(b.summer.used, 1);
+  assert.equal(b.summer.pending, 1);
+  assert.equal(b.summer.remaining, 3);
+});
+
+check("설정값을 바꾸면 잔액이 그대로 따라간다 (설정 화면 → 잔액)", () => {
+  const used = summerDaysOf("2027-08-02", "2027-08-03"); // 2일
+  const before = balanceOn(summerInput(used, 3), "2027-08-10");
+  const after = balanceOn(summerInput(used, 7), "2027-08-10");
+  assert.equal(before.summer.remaining, 1);
+  assert.equal(after.summer.remaining, 5);
+  // 설정을 바꿔도 연차는 그대로다
+  assert.equal(before.annual.remaining, after.annual.remaining);
+});
+
+check("🔴 여름휴가가 모자라도 연차에서 메우지 않는다", () => {
+  const b = balanceOn(summerInput(summerDaysOf("2027-08-02", "2027-08-06"), 3), "2027-08-10");
+  assert.equal(b.summer.used, 3);
+  assert.equal(b.summer.remaining, 0);
+  assert.equal(b.annual.used, 0); // 연차는 한 날도 빠지지 않았다
+  assert.equal(b.shortTotal, 2); // 5일 중 2일이 모자라다고 드러난다
+  // 반대로, 연차가 모자랄 때도 여름휴가가 메우지 않는다
+  const 연차만 = balanceOn(
+    summerInput(
+      expandLeaveDays(
+        {
+          id: "a",
+          leaveType: "ANNUAL",
+          startDate: "2027-08-02",
+          endDate: "2027-08-27",
+          deducts: true,
+        },
+        false,
+        noHolidays,
+      ),
+      3,
+    ),
+    "2027-08-30",
+  );
+  assert.equal(연차만.annual.used, 10);
+  assert.equal(연차만.summer.used, 0);
+  assert.equal(연차만.shortTotal, 10); // 20 근무일 중 10일 모자람
+});
+
+check("여름휴가 신청도 모자라면 미리 걸린다 (shortageIfAdded)", () => {
+  const input = summerInput(summerDaysOf("2027-08-02", "2027-08-03"), 3); // 2일 썼다
+  assert.equal(shortageIfAdded(input, summerDaysOf("2027-08-05", "2027-08-05", true, "새것")), 0);
+  assert.equal(shortageIfAdded(input, summerDaysOf("2027-08-05", "2027-08-06", true, "새것")), 1);
+});
+
+check("🔴 여름휴가의 연도 경계는 연차와 같다 (입사 기념일 기준, 사람마다 다르다)", () => {
+  // 2020-03-15 입사 → 2026년 연차 = 2026-03-15 ~ 2027-03-14
+  const 기념일걸침 = summerInput(summerDaysOf("2027-03-11", "2027-03-18"), 7);
+  const alloc = allocate(기념일걸침);
+  // 연차와 똑같이 두 연차 연도로 갈린다 (주말 이틀 빼고 6일: 3/11~12, 3/15~18)
+  assert.equal(alloc.summer.get(2026)?.used, 2);
+  assert.equal(alloc.summer.get(2027)?.used, 4);
+  assert.equal(alloc.shortTotal, 0);
+
+  // 잔액도 그 경계에서 갈린다 — 기념일 전날과 당일
+  const 전날 = balanceOn(기념일걸침, "2027-03-14");
+  const 당일 = balanceOn(기념일걸침, "2027-03-15");
+  assert.equal(전날.year, leaveYearOf("2020-03-15", "2027-03-14"));
+  assert.equal(전날.year, 2026);
+  assert.equal(전날.summer.used, 2);
+  assert.equal(당일.year, 2027);
+  assert.equal(당일.summer.used, 4); // 넘어오지 않는다. 그 해 몫만 센다
+  // 여름휴가의 기간 = 연차의 기간 (화면이 같은 「○○년 연차」를 머리에 쓴다)
+  assert.equal(당일.annual.entitlement.start, leaveYearWindow("2020-03-15", 2027).start);
+  assert.equal(당일.annual.entitlement.end, leaveYearWindow("2020-03-15", 2027).end);
+
+  // 🔴 사람이 다르면 같은 날이 다른 해에 들어간다 — 입사일 기준이라는 증거
+  const 늦게들어온사람 = balanceOn(
+    summerInput(summerDaysOf("2027-03-11", "2027-03-18"), 7, "2020-09-01"),
+    "2027-03-15",
+  );
+  assert.equal(늦게들어온사람.year, 2026); // 9/1 입사자는 3/15 가 아직 2026년 연차다
+  assert.equal(늦게들어온사람.summer.used, 6); // 6일 모두 한 해에 들어간다
+});
+
+check("🔴 여름휴가에 반차가 없다 — 늘어난 종류는 하나뿐", () => {
+  // 반차가 있는 종류는 예전 둘 그대로다 (SUMMER_AM 같은 것을 만들지 않았다)
+  assert.deepEqual(
+    LEAVE_TYPES.filter((t) => LEAVE_TYPE_INFO[t].halfDay),
+    ["AM_HALF", "PM_HALF"],
+  );
+  assert.deepEqual(SUMMER_LEAVE_TYPES, ["SUMMER"]);
+  assert.equal(LEAVE_TYPES.length, 8); // 일곱에서 하나 늘었다
+  // 하루 단위만 — 하루를 신청하면 0.5일이 아니라 1일
+  const 하루 = computeLeaveDays("SUMMER", "2027-08-02", "2027-08-02", noHolidays);
+  assert.ok(하루.ok && 하루.days === 1);
+  // 여러 날도 되고, 주말·공휴일은 연차와 똑같이 뺀다
+  const 여러날 = computeLeaveDays("SUMMER", "2027-08-06", "2027-08-10", new Set(["2027-08-09"]));
+  assert.ok(여러날.ok && 여러날.days === 2); // 금 + (토·일 빼고) 공휴일 빼고 화
+});
+
+check("주머니 판정: 여름휴가는 deducts 가 false 라도 제 주머니에서 빠진다", () => {
+  assert.equal(poolOf({ leaveType: "SUMMER", deducts: false }), "SUMMER");
+  assert.equal(poolOf({ leaveType: "ANNUAL", deducts: true }), "ANNUAL");
+  assert.equal(poolOf({ leaveType: "AM_HALF", deducts: true }), "ANNUAL");
+  // 차감 없는 휴가는 그대로 어느 주머니에도 들어가지 않는다
+  assert.equal(poolOf({ leaveType: "CONDOLENCE", deducts: false }), null);
+  assert.equal(
+    expandLeaveDays(
+      { id: "c", leaveType: "CONDOLENCE", startDate: "2027-08-02", endDate: "2027-08-04", deducts: false },
+      false,
+      noHolidays,
+    ).length,
+    0,
+  );
+  // 여름휴가 하루하루에는 주머니 이름이 붙어 나온다
+  assert.deepEqual(
+    summerDaysOf("2027-08-02", "2027-08-02").map((d) => d.pool),
+    ["SUMMER"],
+  );
 });
 
 check("같은 날 오전 반차 + 오후 반차는 겹치지 않는다", () => {

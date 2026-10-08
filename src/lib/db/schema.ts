@@ -31,10 +31,18 @@ export const USER_ROLES = [
 ] as const;
 export type UserRole = (typeof USER_ROLES)[number];
 
+/**
+ * 휴가 종류. 성질이 **셋**이다 (2026-10-08 여름휴가가 들어오면서 둘에서 셋이 됐다):
+ * 연차에서 깎는 것 · **여름휴가(제 잔액)** · 어디서도 깎지 않는 것.
+ * 어느 잔액에서 빠지는지는 `src/lib/leave/rules.ts` 의 LEAVE_TYPE_INFO.pool 이 정한다.
+ *
+ * 🔴 DB 쪽은 그냥 text 다 (PG enum 이 아니다) — 종류를 더해도 마이그레이션이 없다.
+ */
 export const LEAVE_TYPES = [
   "ANNUAL", // 연차 1일
   "AM_HALF", // 오전 반차 0.5일
   "PM_HALF", // 오후 반차 0.5일
+  "SUMMER", // 여름휴가 1일 (연차와 별개인 제 잔액. 반차 없음)
   "CONDOLENCE", // 경조사 (차감 없음)
   "HEALTH_CHECK", // 건강검진 (차감 없음)
   "RESERVE", // 예비군·민방위 (차감 없음)
@@ -274,6 +282,41 @@ export const webTenureRules = pgTable(
     index("web_tenure_rules_alive_idx")
       .on(t.fromYear)
       .where(sql`${t.isDeleted} = false`),
+  ],
+);
+
+/* ------------------------------------------------------------------ */
+/* web_leave_settings — 회사 전체 휴가 설정 (줄 하나짜리 표)             */
+/* 2026-10-08 여름휴가가 들어오면서 처음 생겼다 — 그전에는 전역 설정을    */
+/* 담을 자리가 없었다                                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 🔴 이 표에는 줄이 **하나뿐**이다. 설정은 회사 전체 하나이고 사람마다·해마다
+ * 다르지 않다 (사용자 결정 2026-10-08). 그래서 id 를 1 로 못 박고 check 로
+ * 지킨다 — 두 번째 줄이 들어가면 「어느 줄이 진짜인가」를 아무도 답할 수 없다.
+ *
+ * 🔴 줄이 **아직 없어도 된다.** 읽는 쪽(data.ts 의 loadLeaveSettings)이 기본값을
+ * 돌려준다 (rules.ts 의 DEFAULT_SUMMER_DAYS = 3). 운영 시작 전이라 관리자가
+ * 설정 화면에 한 번도 들어가지 않았을 수 있다.
+ *
+ * 소프트 삭제 칸이 없다 — 지우는 줄이 아니라 **고치는 줄**이다.
+ */
+export const LEAVE_SETTINGS_ROW_ID = 1;
+
+export const webLeaveSettings = pgTable(
+  "web_leave_settings",
+  {
+    id: integer("id").primaryKey().default(LEAVE_SETTINGS_ROW_ID),
+    /** 여름휴가 — 직원 한 명이 한 연차 연도에 받는 일수. 반차가 없어 정수로 쓴다 */
+    summerDays: days("summer_days").notNull().default(3),
+    ...timestamps,
+  },
+  (t) => [
+    // 🔴 상수를 `${}` 로 끼우면 drizzle 이 **바인딩 자리($1)**로 굽는다 —
+    //    마이그레이션 SQL 이 그대로 깨진다. 글자로 적는다 (= LEAVE_SETTINGS_ROW_ID).
+    check("web_leave_settings_singleton_ck", sql`${t.id} = 1`),
+    check("web_leave_settings_summer_days_ck", sql`${t.summerDays} >= 0`),
   ],
 );
 
@@ -523,6 +566,7 @@ export type Rank = typeof webRanks.$inferSelect;
 export type Employee = typeof webEmployees.$inferSelect;
 export type WebUser = typeof webUsers.$inferSelect;
 export type TenureRule = typeof webTenureRules.$inferSelect;
+export type LeaveSettings = typeof webLeaveSettings.$inferSelect;
 export type Holiday = typeof webHolidays.$inferSelect;
 export type LeaveRequest = typeof webLeaveRequests.$inferSelect;
 export type ApprovalRouteStep = typeof webApprovalRouteSteps.$inferSelect;

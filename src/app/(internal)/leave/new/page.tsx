@@ -22,6 +22,7 @@ export default async function NewLeavePage() {
           holidays={holidays.map((h) => h.day)}
           chainNames={chain.map((r) => r.name)}
           available={balance.available}
+          summerAvailable={balance.summer.remaining}
           today={todayKst()}
           submitLabel="신청하기"
         />

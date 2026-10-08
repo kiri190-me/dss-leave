@@ -9,6 +9,8 @@ import { formatDays } from "@/lib/leave/labels";
 import { LEAVE_TYPE_INFO, computeLeaveDays } from "@/lib/leave/rules";
 
 const DEDUCT_TYPES: LeaveType[] = ["ANNUAL", "AM_HALF", "PM_HALF"];
+/** 여름휴가 — 연차와 별개인 제 잔액이라 줄을 따로 세운다 (반차 없음) */
+const SUMMER_TYPES: LeaveType[] = ["SUMMER"];
 const OTHER_TYPES: LeaveType[] = ["CONDOLENCE", "HEALTH_CHECK", "RESERVE", "OTHER"];
 
 /**
@@ -20,6 +22,7 @@ export function LeaveForm({
   holidays,
   chainNames,
   available,
+  summerAvailable,
   today,
   initial,
   submitLabel,
@@ -27,8 +30,10 @@ export function LeaveForm({
   action: (state: ActionState, formData: FormData) => Promise<ActionState>;
   holidays: string[];
   chainNames: string[];
-  /** 지금 더 신청할 수 있는 일수 (변경이면 원래 휴가 일수를 더한 값) */
+  /** 지금 더 신청할 수 있는 **연차** 일수 (변경이면 원래 휴가 일수를 더한 값) */
   available: number;
+  /** 지금 더 신청할 수 있는 **여름휴가** 일수. 연차와 섞지 않는다 */
+  summerAvailable: number;
   today: string;
   initial?: {
     targetId: string;
@@ -52,7 +57,12 @@ export function LeaveForm({
     return computeLeaveDays(leaveType, startDate, effectiveEnd, holidaySet);
   }, [leaveType, startDate, effectiveEnd, holidaySet]);
 
-  const over = preview?.ok && info.deducts && preview.days > available;
+  // 고른 종류가 어느 주머니에서 빠지는가에 따라 미리 보여 줄 잔액이 갈린다.
+  // 🔴 여름휴가는 연차 잔액과 섞지 않는다 (서버도 주머니별로 따로 본다).
+  const pool = info.pool;
+  const poolAvailable = pool === "SUMMER" ? summerAvailable : available;
+  const poolName = pool === "SUMMER" ? "여름휴가" : "휴가";
+  const over = preview?.ok && pool !== null && preview.days > poolAvailable;
 
   return (
     <form action={formAction} className="space-y-6">
@@ -62,6 +72,14 @@ export function LeaveForm({
           <p className="mb-2 text-sm font-semibold text-slate-700">휴가 종류</p>
           <div className="flex flex-wrap gap-2">
             {DEDUCT_TYPES.map((t) => (
+              <TypeOption key={t} type={t} checked={leaveType === t} onChange={setLeaveType} />
+            ))}
+          </div>
+          <p className="mb-2 mt-4 text-xs font-medium text-slate-500">
+            여름휴가(연차와 따로 · 하루 단위)
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {SUMMER_TYPES.map((t) => (
               <TypeOption key={t} type={t} checked={leaveType === t} onChange={setLeaveType} />
             ))}
           </div>
@@ -135,9 +153,13 @@ export function LeaveForm({
             <>
               <p className="font-medium text-slate-800">
                 {formatRange(startDate, effectiveEnd)} ·{" "}
-                {info.deducts ? (
+                {pool === "ANNUAL" ? (
                   <>
                     연차에서 <strong>{formatDays(preview.days)}</strong> 빠집니다
+                  </>
+                ) : pool === "SUMMER" ? (
+                  <>
+                    여름휴가에서 <strong>{formatDays(preview.days)}</strong> 빠집니다 (연차는 그대로)
                   </>
                 ) : (
                   <>연차에서 빠지지 않습니다 ({formatDays(preview.days)})</>
@@ -146,11 +168,11 @@ export function LeaveForm({
               {!info.halfDay && preview.dates.length > 0 && (
                 <p className="mt-0.5 text-xs text-slate-500">주말·공휴일은 빼고 셉니다.</p>
               )}
-              {info.deducts && (
+              {pool !== null && (
                 <p className={`mt-1 text-xs ${over ? "font-medium text-red-700" : "text-slate-500"}`}>
                   {over
-                    ? `남은 휴가(${formatDays(available)})보다 많습니다.`
-                    : `신청하면 ${formatDays(Math.round((available - preview.days) * 10) / 10)} 남습니다.`}
+                    ? `남은 ${poolName}(${formatDays(poolAvailable)})보다 많습니다.`
+                    : `신청하면 ${formatDays(Math.round((poolAvailable - preview.days) * 10) / 10)} 남습니다.`}
                 </p>
               )}
             </>
