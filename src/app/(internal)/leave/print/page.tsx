@@ -10,7 +10,7 @@ import {
   type RequestView,
 } from "@/lib/leave/data";
 import { LEAVE_TYPE_INFO, STATUS_LABEL, formatDays, stepLabel } from "@/lib/leave/labels";
-import { leaveYearOf, leaveYearWindow, tenureOn, workdaysBetween } from "@/lib/leave/rules";
+import { leaveYearOf, leaveYearWindow, poolOf, tenureOn, workdaysBetween } from "@/lib/leave/rules";
 
 /** 인쇄에 넣는 상태. 기본은 승인·결재 중, '모두'면 반려·취소·거둬들임·변경 전 기록까지 */
 const DEFAULT_STATUSES = new Set(["APPROVED", "PENDING"]);
@@ -177,6 +177,23 @@ export default async function PrintMyLeavePage({
                 {formatDays(balance.annual.remaining)}
               </td>
             </tr>
+            {/*
+              여름휴가 — 🔴 **항상 보인다**(월차처럼 조건부로 숨기지 않는다).
+              안 썼으면 받은 3일 · 남음 3일이 찍힌다 — 받은 것을 안 썼다는 것도 기록이다.
+              기간은 연차와 같으므로 연도를 따로 적지 않는다(BalanceCard 와 같은 이유).
+            */}
+            <tr>
+              <td className="border border-slate-300 px-2 py-1.5">
+                여름휴가
+                <span className="ml-1 text-xs text-slate-500">(연차와 따로 셉니다)</span>
+              </td>
+              <td className="border border-slate-300 px-2 py-1.5 text-right tabular">{formatDays(balance.summer.total)}</td>
+              <td className="border border-slate-300 px-2 py-1.5 text-right tabular">{formatDays(balance.summer.used)}</td>
+              <td className="border border-slate-300 px-2 py-1.5 text-right tabular">{formatDays(balance.summer.pending)}</td>
+              <td className="border border-slate-300 px-2 py-1.5 text-right font-semibold tabular">
+                {formatDays(Math.max(0, balance.summer.remaining))}
+              </td>
+            </tr>
             {balance.monthly && (
               <tr>
                 <td className="border border-slate-300 px-2 py-1.5">
@@ -229,7 +246,7 @@ export default async function PrintMyLeavePage({
                   {formatDays(approvedDeducted)}
                 </td>
                 <td colSpan={3} className="border border-slate-300 px-2 py-1.5 text-xs text-slate-500">
-                  경조사·건강검진·예비군 등은 연차에서 빠지지 않습니다
+                  경조사·건강검진·예비군 등은 연차에서 빠지지 않고, 여름휴가는 여름휴가에서 뺍니다
                 </td>
               </tr>
             </tfoot>
@@ -237,7 +254,8 @@ export default async function PrintMyLeavePage({
         )}
 
         <p className="mt-4 text-[11px] leading-relaxed text-slate-500">
-          * 일수는 주말·공휴일을 뺀 날수이며 반차는 0.5일입니다. 못 쓴 연차는 다음 입사 기념일 전날에 사라지고 넘어가지 않습니다.
+          * 일수는 주말·공휴일을 뺀 날수이며 반차는 0.5일입니다. 못 쓴 연차는 다음 입사 기념일 전날에 사라지고 넘어가지 않으며,
+          못 쓴 여름휴가도 연차와 같이 그날 사라집니다.
           <br />* DSS 휴가 관리 시스템에서 출력했습니다.
         </p>
       </article>
@@ -247,6 +265,9 @@ export default async function PrintMyLeavePage({
 
 function PrintRow({ r, no, inPeriod }: { r: RequestView; no: number; inPeriod: number }) {
   const info = LEAVE_TYPE_INFO[r.leaveType];
+  // 🔴 `deducts` 는 「연차에서 빠지는가」뿐이라 여름휴가도 false 다 — 주머니로 갈라 적지 않으면
+  //    제 잔액에서 분명히 빠지는 여름휴가에 「차감 없음」이라고 거짓이 찍힌다
+  const pool = poolOf({ leaveType: r.leaveType, deducts: r.deducts });
   return (
     <tr className="align-top">
       <td className="border border-slate-300 px-1.5 py-1.5 text-center tabular">{no}</td>
@@ -260,7 +281,8 @@ function PrintRow({ r, no, inPeriod }: { r: RequestView; no: number; inPeriod: n
         {inPeriod !== r.days && (
           <span className="block text-[11px] text-slate-500">전체 {formatDays(r.days)} 중</span>
         )}
-        {!r.deducts && <span className="block text-[11px] text-slate-500">차감 없음</span>}
+        {pool === "SUMMER" && <span className="block text-[11px] text-slate-500">여름휴가에서 뺌</span>}
+        {pool === null && <span className="block text-[11px] text-slate-500">차감 없음</span>}
       </td>
       <td className="border border-slate-300 px-2 py-1.5 whitespace-nowrap">
         {STATUS_LABEL[r.status]}
