@@ -1,6 +1,10 @@
 import { NotificationBell } from "@dss/ui";
 
-import { dismissNotificationAction } from "@/app/actions/notifications";
+import {
+  dismissAllNotificationsAction,
+  dismissNotificationAction,
+} from "@/app/actions/notifications";
+import { visibleNotificationKeys } from "@/lib/auth/notification-keys";
 import { fetchPortalNotifications } from "@/lib/auth/oidc";
 import { findPortalActor } from "@/lib/auth/portal-actor";
 import { env } from "@/lib/env";
@@ -82,6 +86,16 @@ import {
  *    막는 것은 사람을 지키는 것이 아니라 헷갈리게 만드는 일이다(A/S 도
  *    2026-10-20 에 종류 가리기를 풀었다). 결재 자체는 그대로 남아 결재함과
  *    머리말의 대기 건수에 계속 보인다 — 사라지는 것은 **종의 한 줄**뿐이다.
+ *
+ * ── 🔴 「보이는 알림 지우기」(onDismissAll)도 **넘긴다** (2026-10-20) ─────
+ * 줄이 여럿이면 ✕ 를 여러 번 눌러야 했다. 그 단추는 A/S 에만 있었는데, 이제
+ * @dss/ui 가 **단추도 글자도 개수도** 그린다 — 사이트가 하는 일은 함수를
+ * 넘기는 것뿐이다(그쪽 README 「보이는 알림 지우기」 절).
+ *
+ * 🔴 그 자리는 `() => void` 로 **인자를 안 받는데** 지울 열쇠 목록을 아는 것은
+ *    이쪽이다. 그래서 **값을 미리 묶어** 넘긴다(`…bind(null, 열쇠들)`). 묶은
+ *    것도 여전히 서버 액션이라 경계를 건넌다 — 평범한 화살표 함수는 못 건넌다
+ *    (이 조각에 "use client" 가 없는 것이 그 짝이다).
  */
 export async function PortalNotificationBell({ subject }: { subject: string }) {
   // 🔴 둘을 **나란히** 부른다. 줄줄이 부르면 자기 알림이 포털 왕복(상한 2초)
@@ -105,6 +119,25 @@ export async function PortalNotificationBell({ subject }: { subject: string }) {
   //    color-scheme: light 고정이고, 기본값 "host" 는 조상에 .dark 가 있을
   //    때만 어두워진다(메뉴바에서 한 판단과 같다).
   const bell = bellFeedWithOwnFirst({ own, received });
+
+  // ── 🔴 일괄 지우기에 넘길 열쇠 — **지금 그리는 줄 전부** ────────────────
+  // 🔴 묶는 자리는 `bell.items` 다 — **제 줄과 포털 줄이 이미 합쳐진** 목록이고
+  //    (바로 위 bellFeedWithOwnFirst), 지운 제 줄은 거기서 이미 빠져 있다.
+  //    `received.items` 로 묶으면 「전부 지우기를 눌렀는데 내 결재 알림만
+  //    남는다」가 된다 — 이 사이트에는 **제 알림이 있다**(머리말 「자기 알림은
+  //    포털이 주지 않는다」). 제 줄의 열쇠도 그 함수가 이미 달아 두었으므로
+  //    (toOwnBellItem) 여기서 다시 조립하지 않는다.
+  //
+  // 🔴 `visibleNotificationKeys` 가 **그릴 수 없는 주소의 줄을 뺀다.** 종도
+  //    그 줄을 안 그리고 단추에 적는 수도 그렇게 남은 줄 수라, 여기서 빼지
+  //    않으면 「3건」을 눌렀는데 4건이 지워진다(그 함수 주석).
+  // 🔴 묶는 일은 **그릴 때마다** 한다 — 이 조각이 그려지는 순간의 목록이
+  //    곧 사람이 보는 목록이다.
+  const dismissAll = dismissAllNotificationsAction.bind(
+    null,
+    visibleNotificationKeys(bell.items),
+  );
+
   return (
     <NotificationBell
       items={bell.items}
@@ -116,6 +149,10 @@ export async function PortalNotificationBell({ subject }: { subject: string }) {
       onDismiss={dismissNotificationAction}
       // 🔴 `canDismiss` 는 넘기지 않는다 = **모든 줄에 ✕ 가 선다.** 까닭은
       //    위 머리말 끝 문단에 있다.
+      // 🔵 그래서 단추에 적히는 「n건」과 실제로 ✕ 를 누를 수 있는 줄 수가
+      //    언제나 같다(@dss/ui README 의 `canDismiss` 경고가 이 사이트에는
+      //    해당하지 않는다).
+      onDismissAll={dismissAll}
     />
   );
 }
