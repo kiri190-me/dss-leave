@@ -30,6 +30,10 @@ import type { NotificationBellItem } from "@dss/ui";
 
 import { formatRange } from "@/lib/dates";
 import { USER_ROLES, type LeaveType, type RequestKind, type UserRole } from "@/lib/db/schema";
+// 🔴 **설정만** 읽는다(DB 도 브라우저도 아니다 — 머리말의 성질이 유지된다).
+//    쓰는 자리는 단 하나, `ownNotificationSourceId` 이고 거기서 던지지 않게
+//    감싼다. 까닭은 그 함수 주석에.
+import { env } from "@/lib/env";
 import type { Decider } from "./approval-scope";
 import { KIND_LABEL, TYPE_SHORT, formatDays } from "./labels";
 
@@ -234,23 +238,54 @@ export async function buildPortalNotificationFeed(params: {
  */
 
 /**
- * 자기 알림의 `sourceId`.
+ * 설정을 읽지 못했을 때 자기 알림의 `sourceId` 가 물러설 값.
+ *
+ * 🔴 **포털은 `self` 라는 시스템을 모른다.** 그래서 이 값으로 만든 열쇠를
+ *    지움 통로에 보내면 포털이 **조용히 버린다** — 그 PC 에서는 종의 ✕ 가
+ *    제 줄에만 안 듣는다(남의 줄은 그대로 지워진다). 그래도 종은 예전과 똑같이
+ *    그려지고 화면은 뜬다. **설정이 빠진 기계에서 종이 통째로 안 뜨는 것보다
+ *    훨씬 낫다** — 그것이 아래 함수가 던지지 않는 까닭이고, 이 값이 있는
+ *    까닭이다.
+ */
+export const OWN_SOURCE_ID_FALLBACK = "self";
+
+/**
+ * 자기 알림의 `sourceId` — 이 시스템의 `client_id` 다.
  *
  * 포털이 주는 줄의 `sourceId` 는 그 시스템의 `client_id` 이고 열쇠는
- * `client_id:id` 다(merge.ts). 자기 것에 우리 client_id(`dss-leave`)를 적지
- * 않는 이유는 두 가지다.
+ * `client_id:id` 다(merge.ts). 자기 줄도 **같은 모양**이어야 한다:
+ * 「그만 보겠다」는 포털에 적히고, 포털은 `client_id` 로 어느 시스템의 줄인지
+ * 가른다(2026-10-20). 자기 이름을 다르게 적으면 지움이 조용히 버려져
+ * **「계측기에서 지웠는데 휴가에서는 그대로 남는」** 상태가 된다.
  *
- *  1. 🔴 **열쇠가 부딪히지 않게** 하려고. 지금은 포털이 우리 것을 빼고 주므로
- *     `dss-leave:…` 가 올 수 없지만, 그 판단이 바뀌는 날 열쇠가 **글자까지
- *     같아진다** — 그러면 React 가 줄을 잘못 지운다(@dss/ui types.ts 의 `key`).
- *     `self` 로 적어 두면 겹칠 수 있는 값 자체가 없다.
- *  2. env 를 읽지 않으려고. `env.ssoClientId` 는 설정이 없으면 **던진다** —
- *     이 종은 모든 화면에 딸려 오므로 그 자리를 하나도 만들지 않는다.
+ * ── 🔴 왜 던지지 않는가 ─────────────────────────────────────────────────
+ * `env.ssoClientId` 는 설정이 없으면 **던진다.** 이 종은 모든 화면에 딸려
+ * 오므로 그 자리를 하나도 만들면 안 된다 — 임시 로그인만 쓰는 PC 에서는
+ * SSO_CLIENT_ID 가 아예 없다. 여기서 던지면 종 하나 때문에 화면 전체가 500
+ * 이 된다. 그래서 읽다가 터지면 위 `OWN_SOURCE_ID_FALLBACK` 으로 물러서고,
+ * 그때의 트레이드오프는 그 상수 주석에 적어 두었다.
  *
- * 그릴 때는 쓰이지 않는 값이다(묶음은 `data-source-id` 에만 싣는다). 뜻은
- * 「이 사이트 자신」이고, 어느 시스템의 식별자도 아니다.
+ * ── 🔵 열쇠가 포털 것과 같아지는 것은 이제 **요구사항**이다 ──────────────
+ * 2026-09-22 에는 `self` 로 적어 「열쇠가 글자까지 같아지면 React 가 줄을
+ * 잘못 지운다」를 피했다. 지금은 반대다 — 같은 알림은 어디서 보든 **같은
+ * 열쇠**여야 지움이 통한다. 지금도 포털은 **부른 사이트 자신에게 묻지
+ * 않으므로**(site-feed.ts 의 `exceptClientId`) 우리 줄이 섞여 올 수 없다.
+ * 🔴 다만 언젠가 포털이 우리 줄을 **함께 보내게 되면** 같은 열쇠가 두 줄이
+ * 된다 — 그때 필요한 것은 접두사를 다시 가르는 것이 아니라 **중복 제거**다
+ * (합치는 자리는 아래 `bellFeedWithOwnFirst` 한 곳이다).
+ *
+ * 그릴 때는 쓰이지 않는 값이다(묶음은 `data-source-id` 에만 싣는다).
  */
-export const OWN_NOTIFICATION_SOURCE_ID = "self";
+export function ownNotificationSourceId(): string {
+  try {
+    return env.ssoClientId;
+  } catch {
+    // 🔴 까닭을 찍지 않는다 — 이 길은 설정이 없는 PC 에서 **화면마다** 지나고,
+    //    「설정이 없다」는 것은 이미 다른 자리가 알려 준다(머리말의 포털 단추가
+    //    아예 안 그려진다 — (internal)/layout.tsx).
+    return OWN_SOURCE_ID_FALLBACK;
+  }
+}
 
 /**
  * 창구가 내주는 줄 하나를 **이 사이트의 종**에 얹을 모양으로.
@@ -266,10 +301,15 @@ export const OWN_NOTIFICATION_SOURCE_ID = "self";
  * 링크」와 「포털에 내주는 링크」가 두 갈래가 된다.
  */
 export function toOwnBellItem(item: ExternalNotificationItem): NotificationBellItem {
+  // 🔴 열쇠와 `sourceId` 는 **같은 값**이다 — 한 번만 읽어 둘에 쓴다. 두 번
+  //    읽으면 같아야 할 두 값이 갈라질 수 있고(그 사이에 설정이 사라지는 일은
+  //    없지만, 갈라질 수 있는 모양을 남기지 않는다), 무엇보다 열쇠의 접두사가
+  //    곧 「어느 시스템의 줄인가」라는 뜻이 코드에 그대로 보인다.
+  const sourceId = ownNotificationSourceId();
   return {
     ...item,
-    key: `${OWN_NOTIFICATION_SOURCE_ID}:${item.id}`,
-    sourceId: OWN_NOTIFICATION_SOURCE_ID,
+    key: `${sourceId}:${item.id}`,
+    sourceId,
     sourceName: "",
   };
 }
@@ -290,16 +330,53 @@ export type BellFeed = {
  * 규칙이 시스템마다 다르고(A/S 는 같은 대상을 한 번만 센다), 다시 세면 각
  * 시스템의 종과 이 종이 서로 다른 숫자를 말한다. 포털도 같은 이유로 더하기만
  * 한다(@dss/ui README 7절).
+ *
+ * ── 🔴 지운 줄은 **우리 것만** 여기서 뺀다 ──────────────────────────────
+ * 종의 ✕ 는 「그만 보겠다」를 포털에 적고(actions/notifications.ts), 포털은
+ * 그 다음 왕복부터 **남의 시스템 줄을 제 손으로 걸러서** 보낸다 — `items` 에서
+ * 빠지고 `count` 도 그만큼 줄어 있다. 🔴 그래서 `received` 에는 손대지
+ * 않는다. 포털이 손댈 수 없는 것은 **휴가 자신의 줄**뿐이고(애초에 포털이
+ * 보내지 않는 목록이다), 그것을 거르라고 함께 오는 것이 `received.dismissed`
+ * 다(oidc.ts 의 칸 주석).
+ *
+ * 🔴 안 거르면 **「휴가에서 지웠는데 휴가 종에만 그대로 뜬다」**가 된다 —
+ *    다른 시스템에서는 사라지는데 여기서만 남아 제일 헷갈린다.
+ *
+ * 🔵 거를 때 **열쇠를 다시 조립하지 않는다.** 바로 위 `toOwnBellItem` 이 이미
+ *    만든 `key` 를 그대로 맞춰 본다 — 접두사 만드는 식이 두 벌이 되면 갈라지고,
+ *    갈라진 쪽은 「지워도 안 지워진다」로만 드러난다.
  */
 export function bellFeedWithOwnFirst(params: {
   /** 창구가 내주는 그 값 그대로(buildPortalNotificationFeed). */
   own: PortalNotificationFeed;
-  /** 포털이 준 것 — 이미 @dss/ui 의 아홉 칸이다(oidc.ts 가 걸러 둔 값). */
-  received: { items: readonly NotificationBellItem[]; count: number };
+  /**
+   * 포털이 준 것 — 이미 @dss/ui 의 아홉 칸이다(oidc.ts 가 걸러 둔 값).
+   *
+   * `dismissed` 가 선택인 까닭: 포털이 아직 그 칸을 안 보내던 판과, 받은 것이
+   * 없는 자리를 그대로 쓰기 위해서다. 없으면 **거르지 않는다** — 예전과 글자
+   * 하나 다르지 않게 돈다.
+   */
+  received: {
+    items: readonly NotificationBellItem[];
+    count: number;
+    dismissed?: readonly string[];
+  };
 }): BellFeed {
+  const mine = params.own.items.map(toOwnBellItem);
+  const dismissed = new Set(params.received.dismissed ?? []);
+  const kept = dismissed.size === 0 ? mine : mine.filter((row) => !dismissed.has(row.key));
+
   return {
-    items: [...params.own.items.map(toOwnBellItem), ...params.received.items],
-    count: params.own.count + params.received.count,
+    items: [...kept, ...params.received.items],
+    // 🔴 **개수도 함께 줄인다.** 줄은 빠졌는데 배지 숫자가 그대로면 「눌러도 안
+    //    없어지는 숫자」가 된다. 빼는 값은 **우리 줄에서 빠진 수**뿐이고,
+    //    포털이 센 값(received.count)은 손대지 않는다.
+    //
+    // 🔴 0 아래로 내려가지 않게 한다. `own.count` 는 지금 줄 수와 같지만
+    //    (buildPortalNotificationFeed 가 `items.length` 로 센다) 그 사실에
+    //    기대지 않는다 — 세는 규칙이 바뀌면 배지에 음수가 찍힌다.
+    count:
+      Math.max(0, params.own.count - (mine.length - kept.length)) + params.received.count,
   };
 }
 

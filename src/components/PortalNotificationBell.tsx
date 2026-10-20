@@ -1,5 +1,6 @@
 import { NotificationBell } from "@dss/ui";
 
+import { dismissNotificationAction } from "@/app/actions/notifications";
 import { fetchPortalNotifications } from "@/lib/auth/oidc";
 import { findPortalActor } from "@/lib/auth/portal-actor";
 import { env } from "@/lib/env";
@@ -59,6 +60,28 @@ import {
  * 「지금 네 차례인 결재」를 그 자리에서 센 값이다 — 결재를 하면 그 줄은 다음
  * 화면에서 저절로 사라진다. 「확인했다」를 적을 곳이 없고, 적을 수 있게 만들면
  * **결재하지 않은 일을 종에서 지울 수** 있게 된다.
+ *
+ * ── 🔴 지우기(✕)는 **두 걸음**이다 ──────────────────────────────────────
+ * 바로 위 「확인했다」와 달리, 「그만 보겠다」는 **포털**에 적힌다(2026-10-20).
+ * 그래서 남의 시스템 줄이어도 여기서 지울 수 있고, 한 번 지우면 사내 시스템
+ * **전부의 종**에서 사라진다. 적는 자리는 서버 액션이다
+ * (app/actions/notifications.ts) — 그것 하나만으로는 **휴가에서만 안
+ * 지워진다.** 제 알림이 있는 사이트는 한 걸음이 더 있다:
+ *
+ *   ① 적기   ✕ → 서버 액션 → 포털
+ *   ② 거르기 포털이 돌려준 `dismissed` 로 **우리 줄을** 뺀다
+ *            (leave/portal-notifications.ts 의 bellFeedWithOwnFirst)
+ *
+ * 🔴 ② 가 없으면 「휴가에서 지웠는데 휴가 종에만 그대로 뜬다」가 된다 — 다른
+ *    시스템에서는 사라지는데 여기서만 남아 제일 헷갈린다. 포털이 ② 를 대신해
+ *    줄 수 없는 까닭은 위 「자기 알림은 포털이 주지 않는다」 그대로다: 포털은
+ *    우리 목록을 아예 모른다.
+ *
+ * 🔵 지움이 「결재하지 않은 일을 숨기는」 것이 되지 않나 — 된다. 그래도 막지
+ *    않는다. 같은 줄이 다른 시스템의 종에서는 어차피 지워지므로, 여기서만
+ *    막는 것은 사람을 지키는 것이 아니라 헷갈리게 만드는 일이다(A/S 도
+ *    2026-10-20 에 종류 가리기를 풀었다). 결재 자체는 그대로 남아 결재함과
+ *    머리말의 대기 건수에 계속 보인다 — 사라지는 것은 **종의 한 줄**뿐이다.
  */
 export async function PortalNotificationBell({ subject }: { subject: string }) {
   // 🔴 둘을 **나란히** 부른다. 줄줄이 부르면 자기 알림이 포털 왕복(상한 2초)
@@ -73,11 +96,28 @@ export async function PortalNotificationBell({ subject }: { subject: string }) {
   //    (다시 세지 않는다 — @dss/ui README 7절). 목록이 비면 그 조각이 스스로
   //    null 이라 머리말에 종 자체가 생기지 않는다.
   //
+  // 🔴 **지운 줄은 그 함수가 뺀다** — 포털이 돌려준 `received.dismissed` 로
+  //    우리 줄만 거르고 개수도 함께 줄인다(위 머리말 ②). 포털이 센
+  //    `received.count` 는 손대지 않는다: 남의 줄 몫이고 지움이 이미 반영돼
+  //    있다.
+  //
   // 🔴 colorScheme 은 넘기지 않는다. 이 사이트는 globals.css 에서
   //    color-scheme: light 고정이고, 기본값 "host" 는 조상에 .dark 가 있을
   //    때만 어두워진다(메뉴바에서 한 판단과 같다).
   const bell = bellFeedWithOwnFirst({ own, received });
-  return <NotificationBell items={bell.items} count={bell.count} />;
+  return (
+    <NotificationBell
+      items={bell.items}
+      count={bell.count}
+      // 🔴 `onDismiss` 를 **넘겼을 때만** 줄마다 ✕ 가 그려진다(@dss/ui).
+      //    넘기는 것은 서버 액션이라 번들에는 이름표만 나가고 `client_secret`
+      //    은 서버에 남는다 — 이 조각에 "use client" 가 없는 것이 그 판단의
+      //    짝이다(위 머리말 「왜 서버에서 가져오나」).
+      onDismiss={dismissNotificationAction}
+      // 🔴 `canDismiss` 는 넘기지 않는다 = **모든 줄에 ✕ 가 선다.** 까닭은
+      //    위 머리말 끝 문단에 있다.
+    />
+  );
 }
 
 /** 자기 알림이 없을 때(그리고 읽지 못했을 때)의 답. 🔴 오류가 아니다. */

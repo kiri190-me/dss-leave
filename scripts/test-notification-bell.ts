@@ -56,9 +56,10 @@ import {
 import {
   APPROVALS_PATH,
   LEAVE_APPROVAL_KIND,
-  OWN_NOTIFICATION_SOURCE_ID,
+  OWN_SOURCE_ID_FALLBACK,
   bellFeedWithOwnFirst,
   buildPortalNotificationFeed,
+  ownNotificationSourceId,
   toOwnBellItem,
   type PendingApprovalRow,
   type PortalActor,
@@ -147,7 +148,22 @@ function ownFeed(rows: PendingApprovalRow[], actor: PortalActor | null = ME) {
 }
 
 /** 받은 것이 하나도 없는 답(포털이 죽었을 때와 같은 모양). */
-const NOTHING_RECEIVED: PortalNotificationFeed = { items: [], count: 0, degraded: false };
+const NOTHING_RECEIVED: PortalNotificationFeed = {
+  items: [],
+  count: 0,
+  degraded: false,
+  dismissed: [],
+};
+
+/**
+ * 자기 줄의 열쇠 접두사. 🔴 **이 시스템의 client_id 다**(위에서 환경변수로
+ * 박아 둔 값과 같아야 한다 — 아래 검사가 그것을 단언한다).
+ *
+ * 2026-09-22 에는 `self` 였다. 「그만 보겠다」가 포털에 적히게 되면서
+ * (2026-10-20) 바뀌었다 — 포털은 `self` 라는 시스템을 모르고, 그 열쇠로 온
+ * 지움을 조용히 버린다.
+ */
+const OWN = "dss-leave";
 
 type Drawn = { type: unknown; props: Record<string, unknown> };
 
@@ -229,7 +245,7 @@ const json = (status: number, body: unknown) => (res: ServerResponse) => {
   res.end(JSON.stringify(body));
 };
 
-const EMPTY = { items: [], count: 0, degraded: true };
+const EMPTY = { items: [], count: 0, degraded: true, dismissed: [] };
 
 async function main() {
   await new Promise<void>((resolve) => portal.listen(0, "127.0.0.1", resolve));
@@ -392,7 +408,7 @@ async function main() {
         degraded: false,
       }),
     );
-    assert.deepEqual(feed, { items: [row()], count: 3, degraded: false });
+    assert.deepEqual(feed, { items: [row()], count: 3, degraded: false, dismissed: [] });
   });
 
   check("🔴 모양이 깨진 줄은 **그 줄만** 버린다 — 한 줄 때문에 머리말이 비지 않는다", () => {
@@ -581,8 +597,8 @@ async function main() {
 
     const bell = bellFeedWithOwnFirst({ own, received });
     const expected = [
-      `${OWN_NOTIFICATION_SOURCE_ID}:${LEAVE_APPROVAL_KIND}:s-1`,
-      `${OWN_NOTIFICATION_SOURCE_ID}:${LEAVE_APPROVAL_KIND}:s-2`,
+      `${OWN}:${LEAVE_APPROVAL_KIND}:s-1`,
+      `${OWN}:${LEAVE_APPROVAL_KIND}:s-2`,
       "rf-service-system:APPROVAL:1",
       "njlee:CAL:2",
     ];
@@ -623,9 +639,7 @@ async function main() {
     assert.equal(bell.items.length, 1);
     assert.equal(bell.count, 1);
     assert.notEqual(NotificationBell(bell), null, "🔴 포털이 죽어 종까지 사라졌다");
-    assert.deepEqual(drawnKeys(bell), [
-      `${OWN_NOTIFICATION_SOURCE_ID}:${LEAVE_APPROVAL_KIND}:step-1`,
-    ]);
+    assert.deepEqual(drawnKeys(bell), [`${OWN}:${LEAVE_APPROVAL_KIND}:step-1`]);
   });
 
   await checkAsync("자기 것도 받은 것도 없으면 종 자체가 없다 — 지금과 같은 모습이다", async () => {
@@ -657,31 +671,114 @@ async function main() {
     );
   });
 
-  await checkAsync("🔴 열쇠가 포털 것과 부딪히지 않는다 — 우리 것이 함께 와도", async () => {
-    // 지금 포털은 우리 것을 빼고 주지만, 그 판단이 바뀌는 날 열쇠가 글자까지
-    // 같아지면 React 가 줄을 잘못 지운다(@dss/ui types.ts 의 key).
+  await checkAsync("🔴 자기 줄의 열쇠 접두사는 **client_id** 다 — 아니면 지움이 안 통한다", async () => {
+    // 🔴 2026-10-20 에 뒤집힌 판단이다. 그전에는 `self` 로 적어 「포털 것과
+    //    글자까지 같아지는 것」을 피했는데, 「그만 보겠다」가 포털에 적히게
+    //    되면서 **같은 알림은 어디서 보든 같은 열쇠여야** 한다 — 포털은
+    //    client_id 로 어느 시스템의 줄인지 가르고, 모르는 시스템(`self`)의
+    //    열쇠는 조용히 버린다. 접두사가 어긋나면 「계측기에서 지웠는데 휴가에서는
+    //    그대로 남는」 상태가 되고, 아무 오류도 나지 않는다.
+    assert.equal(ownNotificationSourceId(), OWN, "열쇠 접두사가 client_id 가 아니다");
+
     const own = await ownFeed([approval({ stepId: "s-1" })]);
+    const mine = toOwnBellItem(own.items[0]);
+    // 포털이 이 줄을 남의 종에 실을 때 적는 열쇠와 **글자까지 같다**(merge.ts
+    // 의 `{client_id}:{id}`). 그래서 어느 종에서 지우든 같은 줄이 지워진다.
+    assert.equal(mine.key, `${OWN}:${LEAVE_APPROVAL_KIND}:s-1`);
+    assert.equal(mine.key, `${mine.sourceId}:${mine.id}`);
+  });
+
+  await checkAsync("🔴 합쳐진 목록에 **같은 열쇠가 두 번** 있지 않다", async () => {
+    // 🔴 **되살린 검사다.** 이 줄이 지키는 것은 접두사 규칙이 아니라 「합친
+    //    목록 안에서 열쇠가 유일한가」 하나다 — @dss/ui 가 그 값을 React key 로
+    //    쓰므로, 겹치면 그리기가 어긋나 **줄을 잘못 지운다**(그쪽 types.ts 의
+    //    `key`). 접두사가 무엇이든 이것은 참이어야 한다.
+    //
+    // 🔴 겹칠 여지는 줄어든 것이 아니라 **늘었다.** 예전에는 우리 접두사가
+    //    `self` 라 포털 것과 글자가 달라 겹칠 수가 **없었는데**, 지금은 양쪽
+    //    모양이 같아졌다(`{client_id}:{id}`). 포털이 우리 줄을 **함께 보내게
+    //    되는 날** — portal-notifications.ts 의 `ownNotificationSourceId` 주석이
+    //    말하는 그 날, 필요한 것은 접두사를 다시 가르는 것이 아니라 중복
+    //    제거다 — **이 검사가 먼저 운다.**
+    const own = await ownFeed([
+      approval({ stepId: "s-1" }),
+      approval({ stepId: "s-2", applicantName: "박사원" }),
+    ]);
     const received = normalizePortalNotificationFeed({
-      items: [
-        row({
-          key: `dss-leave:${LEAVE_APPROVAL_KIND}:s-1`,
-          sourceId: "dss-leave",
-          id: `${LEAVE_APPROVAL_KIND}:s-1`,
-        }),
-      ],
-      count: 1,
+      items: [row({ key: "rf-service-system:APPROVAL:1" }), row({ key: "njlee:CAL:2" })],
+      count: 2,
     });
 
     const keys = bellFeedWithOwnFirst({ own, received }).items.map((item) => item.key);
+
+    // 🔴 **표본이 비어서 공짜로 통과하지 않게** 한다. 빈 목록도, 한쪽만 있는
+    //    목록도 「열쇠가 전부 다르다」를 만족한다 — 겹침은 **양쪽이 한자리에
+    //    모였을 때만** 생기므로, 둘 다 하나 이상이 실제로 실렸는지 먼저 본다.
+    assert.ok(own.items.length > 0, "우리 줄 표본이 없다");
+    assert.ok(received.items.length > 0, "포털 줄 표본이 없다");
+    assert.equal(
+      keys.length,
+      own.items.length + received.items.length,
+      "합치다 줄이 샜다 — 한쪽만 세고 있으면 겹침을 영영 못 본다",
+    );
+    assert.ok(keys.includes("njlee:CAL:2"), "포털 줄이 합친 목록에 없다");
+
     assert.equal(new Set(keys).size, keys.length, `🔴 열쇠가 겹쳤다: ${keys.join(" / ")}`);
-    assert.ok(keys[0].startsWith(`${OWN_NOTIFICATION_SOURCE_ID}:`));
+  });
+
+  check("🔴 설정이 없어도 **던지지 않는다** — 종은 모든 화면에 딸려 온다", () => {
+    // 임시 로그인만 쓰는 PC 에는 SSO_CLIENT_ID 가 아예 없다. 여기서 던지면
+    // 종 하나 때문에 화면 전체가 500 이 된다.
+    const before = process.env.SSO_CLIENT_ID;
+    delete process.env.SSO_CLIENT_ID;
+    try {
+      assert.equal(ownNotificationSourceId(), OWN_SOURCE_ID_FALLBACK);
+      // 줄은 예전 그대로 그려진다 — 물러섰을 때 안 되는 것은 **제 줄 지움을
+      // 포털에 적는 것**뿐이다(포털이 `self` 를 모른다).
+      const drawn = toOwnBellItem({
+        id: `${LEAVE_APPROVAL_KIND}:s-1`,
+        kind: LEAVE_APPROVAL_KIND,
+        kindLabel: "휴가 결재 대기",
+        subject: "김대리",
+        detail: "연차",
+        href: `${OWN_BASE_URL}${APPROVALS_PATH}`,
+      });
+      assert.equal(drawn.key, `${OWN_SOURCE_ID_FALLBACK}:${LEAVE_APPROVAL_KIND}:s-1`);
+    } finally {
+      process.env.SSO_CLIENT_ID = before;
+    }
+  });
+
+  await checkAsync("🔴 포털이 지웠다고 한 **우리 줄**을 뺀다 — 개수도 함께 줄인다", async () => {
+    // 안 거르면 「휴가에서 지웠는데 휴가 종에만 그대로 뜬다」가 된다.
+    const own = await ownFeed([approval({ stepId: "s-1" }), approval({ stepId: "s-2" })]);
+    const received = normalizePortalNotificationFeed({
+      items: [row({ key: "njlee:CAL:2" })],
+      count: 1,
+      // 🔴 포털은 **이 사이트 몫의 열쇠만** 싣는다. 남의 줄은 제 손으로 이미
+      //    걸러서 보낸다(items·count 양쪽에서 빠져 있다).
+      dismissed: [`${OWN}:${LEAVE_APPROVAL_KIND}:s-1`],
+    });
+
+    const bell = bellFeedWithOwnFirst({ own, received });
+    assert.deepEqual(drawnKeys(bell), [`${OWN}:${LEAVE_APPROVAL_KIND}:s-2`, "njlee:CAL:2"]);
+    assert.equal(bell.count, 2, "1(남은 내 것) + 1(포털이 센 값) 이 아니다");
+  });
+
+  check("🔴 `dismissed` 를 모르는 판의 답에도 예전 그대로 돈다", () => {
+    // 칸이 없거나 글자가 아닌 것이 섞여 와도 Set 에 쓰레기가 들어가지 않는다.
+    assert.deepEqual(normalizePortalNotificationFeed({ items: [], count: 0 }).dismissed, []);
+    assert.deepEqual(
+      normalizePortalNotificationFeed({ dismissed: ["a", 7, null, "b"] }).dismissed,
+      ["a", "b"],
+    );
   });
 
   await checkAsync("자기 줄에는 시스템 이름을 적지 않는다 — 여기가 휴가다", async () => {
     const own = await ownFeed([approval()]);
     const mine = toOwnBellItem(own.items[0]);
     assert.equal(mine.sourceName, "", "자기 줄에 시스템 이름을 적었다");
-    assert.equal(mine.sourceId, OWN_NOTIFICATION_SOURCE_ID);
+    assert.equal(mine.sourceId, OWN);
 
     const drawn = flatten(NotificationBell({ items: [mine], count: 1 }));
     assert.equal(
