@@ -723,3 +723,113 @@ export async function dismissPortalNotifications(
 
   return recorded;
 }
+
+/* ------------------------------------------------------------------ */
+/* 「이 알림은 확인했다」 — 누른 줄을 포털에 적는다 (2026-10-22)          */
+/*                                                                     */
+/* 🔴 ✕(지움)과 **뜻이 다르다.** ✕ 는 「지금은 그만 보겠다」라 재로그인  */
+/*    하면 돌아오고, 줄을 **누르는 것**은 「해소됐다」라 돌아오지 않는다. */
+/*    포털의 표도 그래서 둘이다(dss-auth 의 site-acknowledgements.ts).    */
+/*                                                                     */
+/* 🔴 **무엇을 없앨지 이 사이트는 판단하지 않는다.** 나가는 것은 열쇠뿐  */
+/*    이고, 포털이 제 목록에서 그 줄을 찾아 **내용 지문을 직접 계산**해   */
+/*    적는다. 사이트가 지문을 정할 수 있으면 아무 값이나 넣어 그 알림을   */
+/*    영영 안 보이게 만들 수 있기 때문이다. 종에서 빠지는 것은 (기록이    */
+/*    있고 · 지문이 지금 내용과 같고 · 분류가 「정보 확인용」) 셋이 다     */
+/*    맞을 때뿐이라, 결재 승인처럼 **동작이 필요한 줄은 확인을 적어도     */
+/*    남는다.**                                                        */
+/*                                                                     */
+/* 🔴 **이 함수는 제 알림(「지금 내 차례인 휴가 결재」)에는 부르지      */
+/*    않는다** — 부르는 쪽은 components/PortalNotificationBell.tsx 다.   */
+/*    까닭 둘: ① 포털은 부른 사이트 자신의 알림을 모른다(그쪽 문서       */
+/*    「빠져 있는 것」 절) — 제 줄의 열쇠를 보내도 포털 목록에 없어       */
+/*    조용히 버려진다(skipped). ② 이 시스템은 알림 분류 표가 없어 포털의 */
+/*    기본값(ACTION=승인용)을 받는다 — 지금은 승인용이라 보내도 안       */
+/*    빠지지만, 분류가 나중에 바뀌면 그때 결재 대기가 **조용히 사라진다.** */
+/*    그래서 애초에 보내지 않는 편을 골랐다(판단 자리는                  */
+/*    leave/portal-notifications.ts 의 isOwnBellItem).                  */
+/*                                                                     */
+/* ── 🔴 왜 지움 쪽과 **나눠 쓰지 않았나** ───────────────────────────── */
+/* 두 통로는 자격증명도·몸통 모양도·상한도 같아서 한 함수로 묶고 주소만  */
+/* 달리 받을 수 있다. 그래도 묶지 않았다 — 묶으려면 **이미 돌고 있는     */
+/* 지움 쪽 코드를 고쳐야** 하는데, 이번 조각의 요구가 「[X] 는 지금대로」 */
+/* 였다(2026-10-22). 돌고 있는 길을 건드리지 않는 쪽을 골랐다.          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 「이 알림은 확인했다」를 포털에 적는다. 🔴 **어떤 일이 있어도 던지지
+ * 않는다** — 묻는 쪽·지움 쪽과 같은 약속이고, 여기서는 한 가지가 더 걸려
+ * 있다: 이 함수는 사람이 줄을 **누른 그 순간**에 불리는데 그 누름은
+ * **다른 화면으로 건너가는 일**이기도 하다. 예외가 새면 못 적는 데서 그치지
+ * 않고 이동까지 흔들린다(@dss/ui 의 notifyAcknowledged 가 한 겹 더 받아
+ * 주지만, 그것에 기대지 않는다).
+ *
+ * @param subject 포털의 users.id (= ID 토큰의 sub). 이 사이트는
+ *                `web_users.authSub` 로 들고 있다. 🔴 **서버가 제 세션에서
+ *                가진 값**이어야 한다 — 브라우저가 보낸 값을 그대로 넘기면
+ *                남의 알림을 확인 처리하는 통로가 된다.
+ * @param key     `{client_id}:{id}` 모양 **하나**. 모양이 틀리거나 모르는
+ *                시스템의 것은 포털이 조용히 버린다(skipped). 🔴 **이 사이트
+ *                자신의 열쇠를 넘기지 마라** — 위 머리말 참조.
+ *
+ * 🔴 지움과 달리 **열쇠를 하나만 받는다.** 확인은 줄을 하나 누르는 일이라
+ *    열쇠가 언제나 하나다. 지움처럼 200개씩 나눠 보내는 고리를 미리 두면
+ *    아무도 안 돌리는 고리가 된다 — 「확인 전부」 같은 단추가 생기는 날
+ *    그때 더한다(포털의 상한은 지움과 같은 값이다).
+ *
+ * @returns 적혔는가. 🔵 몇 번을 다시 보내도 안전하다 — 같은 열쇠를 두 번
+ *          확인하는 것은 한 번 확인하는 것과 같다.
+ */
+export async function acknowledgePortalNotification(
+  subject: string,
+  key: string,
+): Promise<boolean> {
+  if (!subject) return false;
+
+  // 🔴 빈 열쇠는 아예 보내지 않는다 — 포털이 400(no_keys)으로 거절하므로
+  //    부르는 것은 거절 한 줄을 로그에 쌓는 일뿐이다(지움 쪽과 같다).
+  if (!key) return false;
+
+  let response: Response;
+  try {
+    // 🔴 env 의 getter 는 값이 없으면 던진다 — 그래서 try **안**에서 읽는다.
+    //    설정이 빠진 것 때문에 줄 한 번 누르기가 깨지면 안 된다.
+    const credentials = `${encodeURIComponent(env.ssoClientId)}:${encodeURIComponent(
+      env.ssoClientSecret,
+    )}`;
+
+    response = await fetch(
+      `${env.ssoIssuer}/api/integration/notification-acknowledgements`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Basic ${Buffer.from(credentials, "utf8").toString("base64")}`,
+          "content-type": "application/x-www-form-urlencoded",
+          accept: "application/json",
+        },
+        // 🔴 칸 이름은 `keys` 다(하나여도) — 지움 통로와 **같은 모양**이고,
+        //    포털도 같은 파서를 쓴다(dss-auth 의 readDismissalKeys).
+        body: new URLSearchParams({ sub: subject, keys: key }).toString(),
+        cache: "no-store",
+        signal: AbortSignal.timeout(NOTIFICATIONS_TIMEOUT_MS),
+      },
+    );
+  } catch (error) {
+    // 🔴 남기는 것은 오류의 **종류**뿐이다. 열쇠에는 결재 단계 id 같은 업무
+    //    식별자가 들어 있어 그것도 찍지 않는다(포털이 같은 판단을 한다).
+    console.error(
+      "[sso] 알림 확인을 적지 못했습니다:",
+      error instanceof Error ? error.name : "unknown",
+    );
+    return false;
+  }
+
+  if (!response.ok) {
+    // 거절 본문은 포털의 내부 사정을 설명할 수 있어 상태 코드만 남긴다
+    // (묻는 쪽·지움 쪽과 같은 판단이다).
+    console.error("[sso] 알림 확인 통로 거절:", response.status);
+    return false;
+  }
+
+  return true;
+}

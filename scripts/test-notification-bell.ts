@@ -57,6 +57,7 @@ import {
   visibleNotificationKeys,
 } from "../src/lib/auth/notification-keys";
 import {
+  acknowledgePortalNotification,
   fetchPortalNotifications,
   normalizePortalNotificationFeed,
   type PortalNotificationFeed,
@@ -67,6 +68,7 @@ import {
   OWN_SOURCE_ID_FALLBACK,
   bellFeedWithOwnFirst,
   buildPortalNotificationFeed,
+  isOwnBellItem,
   ownNotificationSourceId,
   toOwnBellItem,
   type PendingApprovalRow,
@@ -843,9 +845,11 @@ async function main() {
       false,
       "🔴 종이 결재 판정을 손으로 다시 적었다",
     );
-    // 🔴 자기 알림에 확인 기능을 붙이지 않았다 — 결재하면 다음 화면에서 저절로
-    //    사라진다. 붙이면 「결재하지 않은 일을 종에서 지우기」가 생긴다.
-    assert.equal(bell.includes("onAcknowledge"), false, "🔴 확인을 붙였다");
+    // 🔴 2026-10-22 까지는 여기서 「자기 알림에 확인 기능을 붙이지 않았다」를
+    //    단언했다. 이제는 **붙인다** — 대신 제 줄이면 isOwnBellItem 이 걸러
+    //    acknowledgeNotificationAction 안에서 멈춘다(아래 「8. 확인」절).
+    //    「결재하지 않은 일을 종에서 지우기」가 생기지 않는 것은 그 울타리가
+    //    지킨다 — 여기서는 결재 판정을 다시 쓰지 않는지만 본다.
   });
 
   check("🔴 자기 알림을 읽다 실패해도 화면이 500 이 되지 않는다", () => {
@@ -1093,6 +1097,235 @@ async function main() {
     assert.ok(vetAt > 0 && sendAt > vetAt, "🔴 가리기 전에 포털을 부른다");
     assert.ok(all.includes("if (wanted === null) return;"), "거절 값을 그냥 보낸다");
     assert.ok(all.includes("if (wanted.length === 0) return;"), "빈 묶음을 보낸다");
+  });
+
+  /* ---------------------------------------------------------------- */
+  /* 8. 🔴 확인(onAcknowledge) — 제 줄은 포털을 부르지 않는다 (2026-10-22)  */
+  /*    남의 시스템 줄은 포털에 「확인했다」를 적을 수 있지만, 이 사이트    */
+  /*    자신의 결재 대기(「지금 내 차례인 휴가 결재」)는 포털이 애초에      */
+  /*    모르는 목록이라 보내면 조용히 버려지고, 분류가 바뀌면 결재 대기가  */
+  /*    조용히 사라지는 길이 열린다 — 그래서 제 줄은 아예 보내지 않는다.   */
+  /* ---------------------------------------------------------------- */
+
+  const notificationsAction = withoutComments(read("src/app/actions/notifications.ts"));
+
+  /** 자기 줄 하나 — toOwnBellItem 이 실제로 만드는 그 모양. */
+  function ownBellItem(): NotificationBellItem {
+    return toOwnBellItem({
+      id: `${LEAVE_APPROVAL_KIND}:s-1`,
+      kind: LEAVE_APPROVAL_KIND,
+      kindLabel: "휴가 결재 대기",
+      subject: "김대리",
+      detail: "연차",
+      href: `${OWN_BASE_URL}${APPROVALS_PATH}`,
+    });
+  }
+
+  check("🔴 isOwnBellItem — 제 줄은 true, 포털 줄은 false다", () => {
+    const mine = ownBellItem();
+    assert.equal(mine.sourceId, OWN, "자기 줄의 sourceId 가 이 시스템의 client_id 가 아니다");
+    assert.equal(isOwnBellItem(mine), true, "🔴 제 줄인데 포털 줄로 읽힌다");
+
+    // 포털이 주는 줄(row())의 sourceId 는 다른 시스템의 client_id 다.
+    assert.equal(isOwnBellItem(row() as unknown as NotificationBellItem), false, "🔴 포털 줄인데 제 줄로 읽힌다");
+    assert.equal(isOwnBellItem({ sourceId: "" }), false);
+    assert.equal(isOwnBellItem({ sourceId: "njlee" }), false, "남의 시스템과 우리 것을 헷갈렸다");
+  });
+
+  check(
+    "🔴 설정이 없는 PC 에서도 — 자기 줄은 OWN_SOURCE_ID_FALLBACK 로 여전히 걸린다",
+    () => {
+      // ownNotificationSourceId() 가 물러서는 값("self")과 isOwnBellItem 이
+      // 비교하는 값은 **같은 호출**이라 환경이 무엇이든 어긋나지 않는다.
+      const before = process.env.SSO_CLIENT_ID;
+      delete process.env.SSO_CLIENT_ID;
+      try {
+        assert.equal(ownNotificationSourceId(), OWN_SOURCE_ID_FALLBACK);
+        assert.equal(isOwnBellItem({ sourceId: OWN_SOURCE_ID_FALLBACK }), true);
+      } finally {
+        process.env.SSO_CLIENT_ID = before;
+      }
+    },
+  );
+
+  await checkAsync(
+    "🔴 확인은 포털의 **확인** 통로로 나간다 — 지움 통로가 아니다",
+    async () => {
+      heard = null;
+      answer = json(200, { recorded: 1, dropped: 0, skipped: 0 });
+      const recorded = await acknowledgePortalNotification(SUB, "njlee:CAL:2");
+      assert.equal(recorded, true);
+
+      assert.ok(heard, "포털에 닿지 않았다");
+      const asked = heard as Heard;
+      assert.equal(
+        asked.path,
+        "/api/integration/notification-acknowledgements",
+        "🔴 확인이 엉뚱한 통로로 나간다",
+      );
+      assert.equal(
+        asked.path?.includes("notification-dismissals"),
+        false,
+        "🔴 지움 통로로 갔다",
+      );
+      assert.equal(asked.method, "POST");
+      assert.ok((asked.authorization ?? "").startsWith("Basic "));
+      assert.equal(asked.contentType, "application/x-www-form-urlencoded");
+      // 칸 이름은 열쇠가 하나여도 `keys` 다 — 지움 통로와 같은 모양이다.
+      assert.equal(asked.body, `sub=${SUB}&keys=njlee%3ACAL%3A2`);
+    },
+  );
+
+  await checkAsync(
+    "🔴 ***제 줄을 넘기면 포털을 안 부른다*** — 이 조각에서 가장 중요한 시험",
+    async () => {
+      // 🔴 실제 서버 액션(acknowledgeNotificationAction)은 세션(DB)이 있어야
+      //    불러 볼 수 있다 — 이 검사는 DB 에 닿지 않는 것이 이 파일의 약속이라
+      //    (머리말 참조) 그 함수를 직접 부르지 못한다. 그래서 그 함수가 **실제로
+      //    쓰는 두 재료** — isOwnBellItem(판정)과 acknowledgePortalNotification
+      //    (전송) — 를 **그 함수와 같은 차례**로 실행해 재고, 그 차례가 소스와
+      //    글자까지 같은지는 바로 아래 절이 맞댄다.
+      const mine = ownBellItem();
+
+      heard = null;
+      answer = json(200, { recorded: 1, dropped: 0, skipped: 0 });
+
+      // acknowledgeNotificationAction 의 몸통과 같은 차례: 가르고 나서야 보낸다.
+      if (!isOwnBellItem(mine)) {
+        await acknowledgePortalNotification(SUB, mine.key);
+      }
+      assert.equal(heard, null, "🔴 제 줄인데 포털에 닿았다 — skipped 로 조용히 버려질 값이다");
+
+      // 대조군: 남의 줄이면 같은 차례로 실제 호출이 나간다.
+      const theirs = row({ key: "njlee:CAL:9" }) as unknown as NotificationBellItem;
+      if (!isOwnBellItem(theirs)) {
+        await acknowledgePortalNotification(SUB, theirs.key);
+      }
+      assert.ok(heard, "🔴 남의 줄인데도 포털에 안 닿았다 — 울타리가 전부를 막았다");
+      assert.equal((heard as Heard).body, `sub=${SUB}&keys=njlee%3ACAL%3A9`);
+    },
+  );
+
+  check(
+    "🔴 실제 액션도 **같은 차례** — isOwnBellItem 으로 먼저 거르고서야 포털을 부른다",
+    () => {
+      const at = notificationsAction.indexOf(
+        "export async function acknowledgeNotificationAction",
+      );
+      assert.notEqual(at, -1, "acknowledgeNotificationAction 을 찾지 못했다");
+      const body = notificationsAction.slice(at, notificationsAction.indexOf("\n}\n", at) + 3);
+      assert.ok(body.length > 50, "잘라 낸 토막이 비었다 — 시험이 아무것도 못 본다");
+
+      const gateAt = body.indexOf("if (isOwnBellItem(item)) return;");
+      const sendAt = body.indexOf("acknowledgePortalNotification(");
+      assert.ok(gateAt > 0, "🔴 제 줄을 거르는 울타리가 없다");
+      assert.ok(sendAt > gateAt, "🔴 포털을 부른 **뒤에** 가른다 — 이미 늦었다");
+    },
+  );
+
+  check("🔴 종에 확인 서버 액션을 넘긴다 — 안 넘기면 눌러도 아무 일도 안 일어난다", () => {
+    const bell = withoutComments(read("src/components/PortalNotificationBell.tsx"));
+    assert.match(
+      bell,
+      /import \{[\s\S]*?\backnowledgeNotificationAction\b[\s\S]*?\} from "@\/app\/actions\/notifications";/,
+    );
+    assert.match(
+      bell,
+      /<NotificationBell[\s\S]*?onAcknowledge=\{acknowledgeNotificationAction\}[\s\S]*?\/>/,
+    );
+  });
+
+  check("🔴 [X] 와 「보이는 알림 지우기」는 **그대로** 지움으로 간다 — 확인으로 안 옮겨 갔다", () => {
+    const bell = withoutComments(read("src/components/PortalNotificationBell.tsx"));
+    assert.match(
+      bell,
+      /<NotificationBell[\s\S]*?onDismiss=\{dismissNotificationAction\}[\s\S]*?\/>/,
+    );
+    assert.match(bell, /<NotificationBell[\s\S]*?onDismissAll=\{dismissAll\}[\s\S]*?\/>/);
+
+    const dismissAt = notificationsAction.indexOf(
+      "export async function dismissNotificationAction",
+    );
+    // 🔴 이 함수 바로 다음에 오는 것은 acknowledgeNotificationAction 이다
+    //    (dismissAllNotificationsAction 이 아니다) — 그걸로 자르면 그 사이의
+    //    acknowledgeNotificationAction 몸통까지 슬라이스에 딸려 들어와
+    //    "acknowledgePortalNotification" 글자가 **엉뚱하게** 걸린다.
+    const nextAt = notificationsAction.indexOf(
+      "export async function acknowledgeNotificationAction",
+    );
+    const dismissOne = notificationsAction.slice(dismissAt, nextAt);
+    assert.ok(dismissOne.length > 50, "dismissNotificationAction 토막이 비었다");
+    assert.equal(
+      dismissOne.includes("acknowledgePortalNotification"),
+      false,
+      "🔴 ✕ 가 확인까지 적는다 — 지운 줄이 재로그인해도 안 돌아온다",
+    );
+  });
+
+  check("🔴 확인 액션이 사람 번호를 인자로 받지 않는다 — 세션에서 읽는다", () => {
+    const at = notificationsAction.indexOf("export async function acknowledgeNotificationAction");
+    const open = notificationsAction.indexOf("{", at);
+    const head = notificationsAction.slice(at, open);
+    assert.equal(/\bsub\b|subject/.test(head), false, "🔴 사람 번호를 인자로 받는다");
+    assert.match(
+      head,
+      /acknowledgeNotificationAction\(\s*item: NotificationBellItem,?\s*\)/,
+      "받는 모양이 바뀌었다",
+    );
+    const at2 = notificationsAction.indexOf(
+      "export async function acknowledgeNotificationAction",
+    );
+    const tail = notificationsAction.slice(at2);
+    assert.ok(tail.includes("const viewer = await getViewer();"), "세션에서 다시 읽지 않는다");
+    assert.ok(tail.includes("viewer.user.authSub"), "제 세션의 값을 쓰지 않는다");
+    assert.equal(
+      /requireViewer|requireSession/.test(tail.slice(0, tail.indexOf("}"))),
+      false,
+      "🔴 종 하나 때문에 화면이 포털 로그인으로 튄다",
+    );
+  });
+
+  check("🔴 확인 액션이 던지지 않는다 — 이 함수는 화면 이동 한가운데서 불린다", () => {
+    const at = notificationsAction.indexOf("export async function acknowledgeNotificationAction");
+    const tail = notificationsAction.slice(at, notificationsAction.indexOf("\n}\n", at) + 3);
+    assert.ok(tail.includes("try {"), "감싸지 않았다");
+    assert.ok(tail.includes("} catch (error) {"), "거절을 받아 주지 않는다");
+    assert.equal(/\bthrow\b/.test(tail), false, "🔴 확인 액션이 던진다 — 이동까지 흔들린다");
+  });
+
+  check(
+    "🔴 @dss/ui 가 확인 함수를 try 로 감싼다 — 던져도 이동이 막히지 않는다",
+    () => {
+      // 이동은 평범한 <a href> 가 한다. 누름 한가운데서 예외가 새면 그 이동까지
+      // 흔들리므로, vendor/dss-ui 가 한 겹 받아 준다. 포인터가 옛 커밋이면
+      // 이 자리가 없어 여기서 걸린다.
+      const behavior = withoutComments(
+        read("vendor/dss-ui/src/notification-bell/BellBehavior.tsx"),
+      );
+      const squeeze = (s: string) => s.replace(/\s+/g, " ");
+      assert.match(
+        squeeze(behavior),
+        /try \{ onAcknowledge\(item\); \} catch \{/,
+        "🔴 @dss/ui 가 확인 함수를 감싸지 않는다",
+      );
+    },
+  );
+
+  check("🔴 낡아진 까닭이 주석에 남아 있지 않다 — 메모(제 알림이 생기면)는 남는다", () => {
+    const bellRaw = read("src/components/PortalNotificationBell.tsx");
+    assert.equal(
+      bellRaw.includes("확인(onAcknowledge)을 넘기지 않는 이유"),
+      false,
+      "🔴 낡은 까닭 제목이 그대로 있다",
+    );
+    assert.equal(
+      bellRaw.includes("이 사이트에는 적을 자리가 없다. 줄을"),
+      false,
+      "🔴 낡은 까닭의 본문이 그대로 있다 — 「적을 곳이 없다」전제는 사라졌다",
+    );
+    // 🔴 가르는 자리(제 줄 울타리)가 **이름으로** 남아야 한다 — 다음 사람이
+    //    여기를 읽고 isOwnBellItem 을 찾아갈 수 있어야 한다.
+    assert.ok(bellRaw.includes("isOwnBellItem"), "🔴 제 줄 울타리를 가리키는 이름이 주석에 없다");
   });
 
   portal.closeAllConnections();

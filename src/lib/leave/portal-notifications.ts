@@ -314,6 +314,31 @@ export function toOwnBellItem(item: ExternalNotificationItem): NotificationBellI
   };
 }
 
+/**
+ * 종에 그려진 줄 하나가 **이 사이트 자신의 것인가** (2026-10-22).
+ *
+ * 🔴 확인(✓)을 포털로 보낼지 가르는 **유일한 자리**다. 판정은 위
+ * `toOwnBellItem` 이 쓴 그 접두사를 **되짚어** 본다 — 자기 줄을 만드는 식과
+ * 가르는 식이 따로 있으면 한쪽만 고치는 날 조용히 갈라진다(이 파일 머리말의
+ * 「거를 때 열쇠를 다시 조립하지 않는다」와 같은 걱정).
+ *
+ * ── 🔴 왜 이 판정이 필요한가 ───────────────────────────────────────────
+ * 받은 알림(포털 줄)은 그 알림을 만든 시스템이 따로 있어 포털에 확인을 적을
+ * 수 있다. 하지만 **이 사이트 자신의 줄**(「지금 내 차례인 휴가 결재」)은
+ * 포털이 애초에 모르는 목록이다(buildPortalNotificationFeed — 포털은 부른
+ * 사이트 자신에게는 묻지 않는다). 그 열쇠를 포털에 보내면 포털 목록에서 못
+ * 찾아 **조용히 버려진다**(skipped) — 지움처럼 「하루 안에 돌아온다」가 아니라
+ * **확인은 안 돌아온다**는 사실과 맞물리면, 언젠가 이 시스템의 알림 분류가
+ * 바뀌는 날 「결재 대기가 조용히 사라지는」 길이 된다(이 파일을 부르는 쪽의
+ * 머리말 참조). 그래서 **제 줄은 포털을 아예 부르지 않는다** — 확인 자체를
+ * 아무 일도 하지 않는 것으로 둔다(이 시스템의 알림은 저장된 값이 아니라
+ * 「지금 네 차례인 결재」를 그 자리에서 센 값이라, 결재를 하면 다음 화면에서
+ * 그 줄이 저절로 사라진다).
+ */
+export function isOwnBellItem(item: Pick<NotificationBellItem, "sourceId">): boolean {
+  return item.sourceId === ownNotificationSourceId();
+}
+
 /** 종에 그대로 넘길 값. 칸 이름은 @dss/ui 의 NotificationBellProps 그대로다. */
 export type BellFeed = {
   items: NotificationBellItem[];
