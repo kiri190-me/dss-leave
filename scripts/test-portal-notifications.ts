@@ -543,9 +543,11 @@ async function main() {
   check("🔴 설정은 고정 기본값이고, 역할이 **전부 잠겨** 있다", () => {
     const settings = portalNotificationSettings();
 
+    // 🔴 2026-10-22: 포털 표의 차례는 USER_ROLES(스키마 정의) 그대로가 아니다 —
+    //    권한이 강한 쪽(휴가 관리자)이 앞에 오도록 여기서만 다시 줄 세운다.
     assert.deepEqual(
       settings.roles.map((role) => role.code),
-      ["MEMBER", "LEAVE_ADMIN"],
+      ["LEAVE_ADMIN", "MEMBER"],
     );
     for (const role of settings.roles) {
       assert.equal(role.editable, false, `🔴 ${role.code} 줄이 열려 있다`);
@@ -566,6 +568,11 @@ async function main() {
     for (const cell of Object.values(kind.roles)) {
       assert.deepEqual(cell, { receives: true, defaultReceives: true });
     }
+  });
+
+  check("🔴 2026-10-22: 휴가 관리자가 역할 열의 맨 앞이다 — 글자(label)가 아니라 코드로 잰다", () => {
+    const settings = portalNotificationSettings();
+    assert.equal(settings.roles[0]?.code, "LEAVE_ADMIN", "휴가 관리자가 첫 칸이 아니다");
   });
 
   check("🔴 응답 모양이 포털이 읽는 모양과 같다 — 칸이 하나만 빠져도 그 줄이 통째로 버려진다", () => {

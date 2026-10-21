@@ -465,14 +465,31 @@ export const USER_ROLE_LABELS: Record<UserRole, string> = {
 };
 
 /**
- * 포털이 그릴 역할 목록. 차례는 언제나 USER_ROLES 그대로다.
+ * 포털 표의 역할 **열 차례**(2026-10-22, 쓰는 분 요구 ⑧ — 관리자를 앞에).
+ *
+ * 🔴 `USER_ROLES`(db/schema.ts) 를 그대로 쓰지 않는다 — 그 차례는 역할 칸 검사
+ * (`sso-role.ts`·`admin.ts`)와 DB 칸 정의가 함께 쓰는 차례다. 거기를 바꾸면
+ * 엉뚱한 자리까지 달라질 수 있어, **포털에 낼 때만** 이 차례로 다시 줄 세운다 —
+ * `USER_ROLES` 자체는 손대지 않는다.
+ */
+const SETTINGS_ROLE_ORDER: readonly UserRole[] = ["LEAVE_ADMIN", "MEMBER"];
+
+/** `USER_ROLES` 를 위 표시 차례로 정렬한 사본. 집합은 그대로, 차례만 바뀐다. */
+function sortedUserRolesForSettings(): readonly UserRole[] {
+  return [...USER_ROLES].sort(
+    (a, b) => SETTINGS_ROLE_ORDER.indexOf(a) - SETTINGS_ROLE_ORDER.indexOf(b),
+  );
+}
+
+/**
+ * 포털이 그릴 역할 목록.
  *
  * 🔴 **전부 잠긴다(`editable: false`).** 위 머리말대로 이 시스템에는 끌 수 있는
  * 것이 없다. 포털 관리자 화면은 잠긴 역할을 아예 폼에 싣지 않으므로, 이 값이
  * 곧 「여기는 건드릴 것이 없다」는 표시가 된다.
  */
 export function portalNotificationRoles(): PortalNotificationRole[] {
-  return USER_ROLES.map((code) => ({
+  return sortedUserRolesForSettings().map((code) => ({
     code,
     label: USER_ROLE_LABELS[code],
     editable: false,
