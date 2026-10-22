@@ -102,8 +102,19 @@ export default async function CalendarPage({
           <Legend />
         </div>
 
+        {/*
+          🔴 2026-10-22, 쓰는 분 요청: 폰에서 **토요일 칸이 화면 밖으로 잘렸다.**
+          「가로폭이 줄더라도 잘려 보이지 않도록」이 요청이라, 최소폭을 768px 이상
+          에서만 건다. 넓은 화면은 예전 그대로이고(아래 md 조건), 폰에서는 표가
+          `w-full` 을 따라 줄어들어 일곱 칸이 다 들어온다.
+
+          🔴 감싼 상자의 `overflow-x-auto` 는 **지우지 않는다.** 1024px 부터는
+          오른쪽에 300px 짜리 기둥이 서므로(이 화면 맨 위 grid) 달력 자리가
+          720px 보다 좁아지는 구간이 있다 — 그때 가로로 미는 길이 필요하다.
+          폰에서는 최소폭이 안 걸리니 넘칠 것이 없어 막대가 생기지 않는다.
+        */}
         <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-          <table className="w-full min-w-[720px] table-fixed border-collapse">
+          <table className="w-full table-fixed border-collapse md:min-w-[720px]">
             <thead>
               <tr>
                 {WEEK_HEAD.map((w, i) => (
@@ -144,12 +155,24 @@ export default async function CalendarPage({
                                 : ""
                         }`}
                       >
+                        {/*
+                          🔵 폰에서 한 칸은 46px 남짓이다(360px - 본문 좌우 여백
+                          32px - 상자 테두리 2px, 그것을 일곱으로 나눈 값). 안쪽
+                          여백을 6px 에서 4px 로 줄여 글자 자리를 넓힌다 —
+                          768px 부터는 md 쪽이 예전 값을 그대로 되돌린다.
+                        */}
                         <Link
                           href={`/?ym=${ym}&date=${d}`}
                           scroll={false}
-                          className="flex h-full flex-col gap-1 p-1.5 hover:bg-slate-50"
+                          className="flex h-full flex-col gap-0.5 p-1 hover:bg-slate-50 md:gap-1 md:p-1.5"
                         >
                           <span className="flex flex-wrap items-center gap-x-1 gap-y-0.5">
+                            {/*
+                              🔴 날짜 숫자는 좁은 화면에서도 **줄이지 않는다.** 칸에서 가장
+                              중요한 정보다. 동그라미는 24px 고정이라(h-6 min-w-6) 폰 칸의
+                              글자 자리 38px 안에 들어간다 — 칸을 밀어내지 않는다.
+                              test-calendar-width.ts 의 ③ 이 이 예산을 숫자로 지킨다.
+                            */}
                             <span
                               className={`inline-flex h-6 min-w-6 items-center justify-center rounded-full px-1 text-xs font-semibold ${
                                 isToday
@@ -162,9 +185,16 @@ export default async function CalendarPage({
                               {Number(d.slice(8))}
                             </span>
                             {jp && (
+                              // 🔴 폰에서 이 글자가 칸 밖으로 삐져나오던 자리다. 「(교산 휴무일)」은
+                              //    11px 로도 60px 이 넘어 46px 칸에 안 들어가는데, 글자를 안 꺾는
+                              //    울타리만 있고 빠져나갈 길이 없어 옆 칸 위에 그대로 덧그려졌다.
+                              //    바로 아래 공휴일 이름이 쓰던 처방(칸 폭으로 자르고 말줄임)을
+                              //    그대로 쓴다 — truncate 가 글자 안 꺾기를 이미 품고 있으므로
+                              //    넓은 화면에서는 자를 것이 없어 예전과 같은 글자가 나온다.
+                              //    잘려도 그 칸을 누르면 오른쪽에 일본어 이름까지 다 나온다.
                               <span
                                 title={`교산 휴무일: ${jp.ja} (${jp.ko})`}
-                                className={`whitespace-nowrap text-[11px] font-medium text-red-600 ${inMonth ? "" : "opacity-40"}`}
+                                className={`max-w-full truncate text-[11px] font-medium text-red-600 ${inMonth ? "" : "opacity-40"}`}
                               >
                                 (교산 휴무일)
                               </span>
@@ -181,7 +211,7 @@ export default async function CalendarPage({
                               title={`${e.employeeName} ${e.rankName} · ${LEAVE_TYPE_INFO[e.leaveType].label}${
                                 e.pending ? ` (결재 중${e.turnLabel ? ` — ${e.turnLabel}` : ""})` : ""
                               }`}
-                              className={`block truncate rounded border px-1.5 py-0.5 text-xs ${TYPE_CHIP[e.leaveType]} ${
+                              className={`block truncate rounded border px-1 py-0.5 text-[11px] md:px-1.5 md:text-xs ${TYPE_CHIP[e.leaveType]} ${
                                 e.pending ? "animate-pulse border-dashed" : ""
                               } ${e.isMine ? "font-semibold" : ""}`}
                             >
@@ -190,7 +220,9 @@ export default async function CalendarPage({
                             </span>
                           ))}
                           {list.length > MAX_CHIPS && (
-                            <span className="text-xs text-slate-500">+{list.length - MAX_CHIPS}명 더</span>
+                            // 딱지와 같은 처방. 「+12명 더」는 폰 칸에서도 겨우 들어가는 길이라
+                            // 자를 길을 함께 둔다.
+                            <span className="truncate text-[11px] text-slate-500 md:text-xs">+{list.length - MAX_CHIPS}명 더</span>
                           )}
                         </Link>
                       </td>
