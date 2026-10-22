@@ -53,6 +53,7 @@ npm run seed:ranks
 | `npm run seed:dev` | 개발용 **가짜 사람** 데이터 (명단이 비어 있을 때만, 지우지 않음) |
 | `npm run test:auth` | 로그인 판정 검사 (DB·네트워크 없이) |
 | `npm run test:menu` | 서비스 메뉴바 쿠키 검사 (DB·네트워크 없이) |
+| `npm run test:header` | 머리말 검사 — 좁은 화면의 ☰ 서랍·자리·쌓임 순서 (DB·네트워크·브라우저 없이) |
 | `npm run test:leave` | 휴가 계산 규칙 검사 (DB 없이) |
 | `npm run test:workflow` | 신청·결재 흐름 검사 — **테스트 DB(`dss_leave_test`)에서만** |
 
