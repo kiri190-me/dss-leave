@@ -72,6 +72,22 @@ const withoutComments = (source: string) =>
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/^\s*\/\/.*$/gm, "");
 
+/**
+ * 함수 **하나의 몸통만** 잘라 낸다 — 그 다음 `export` 가 나오는 데서 끊는다.
+ * 까닭은 test-portal-notifications.ts 의 같은 함수 머리말에 적어 두었다
+ * (파일 끝까지 자르면 뒤에 더해지는 함수의 글자를 재게 된다 — 2026-10-24).
+ */
+function bodyOf(source: string, name: string): string {
+  const at = source.indexOf(`export async function ${name}`);
+  assert.ok(at >= 0, `${name} 를 찾지 못했다 — 이름이 바뀌었나`);
+  const rest = source.slice(at);
+  const end = rest.indexOf("\nexport ", 1);
+  const body = end === -1 ? rest : rest.slice(0, end);
+  // 🔵 표본이 비어서 공짜로 통과하는 일이 없게.
+  assert.ok(body.includes("db"), `${name} 의 몸통을 잘라 내지 못했다`);
+  return body;
+}
+
 const ISSUER = "http://192.168.1.10:3100";
 const CLIENT_ID = "dss-leave";
 const BASE_URL = "http://192.168.1.10:3700";
@@ -180,7 +196,7 @@ async function main() {
     }
 
     const data = withoutComments(read("src/lib/leave/data.ts"));
-    const portal = data.slice(data.indexOf("export async function pendingApprovalsForPortal"));
+    const portal = bodyOf(data, "pendingApprovalsForPortal");
     assert.ok(portal.includes("myPendingApprovalWhere(me)"), "승인함 조회가 공용 조건을 안 쓴다");
     assert.equal(
       /eq\(webApprovalSteps\.status/.test(portal),

@@ -84,6 +84,27 @@ const withoutComments = (source: string) =>
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/^\s*\/\/.*$/gm, "");
 
+/**
+ * 함수 **하나의 몸통만** 잘라 낸다 — 그 다음 `export` 가 나오는 데서 끊는다.
+ *
+ * 🔴 2026-10-24 까지 여기는 `slice(indexOf(...))` 로 **파일 끝까지** 잘랐다.
+ * 그러면 그 함수 뒤에 다른 함수가 하나라도 더해지는 날, 「이 질의가 조건을
+ * 다시 적지 않았는가」가 **엉뚱한 함수의 글자**를 재게 된다. 실제로 그날
+ * 포털 쿡 찌르기의 후보 조회(data.ts 의 `approvalNudgeCandidates` — 일부러
+ * 조건을 넓게 적는 자리다)가 더해지면서 이 검사가 깨졌다. 재는 대상을 좁힌
+ * 것이지 단언을 무르게 한 것이 아니다 — 아래 단언은 글자 하나 그대로다.
+ */
+function bodyOf(source: string, name: string): string {
+  const at = source.indexOf(`export async function ${name}`);
+  assert.ok(at >= 0, `${name} 를 찾지 못했다 — 이름이 바뀌었나`);
+  const rest = source.slice(at);
+  const end = rest.indexOf("\nexport ", 1);
+  const body = end === -1 ? rest : rest.slice(0, end);
+  // 🔵 표본이 비어서 공짜로 통과하는 일이 없게.
+  assert.ok(body.includes("db"), `${name} 의 몸통을 잘라 내지 못했다`);
+  return body;
+}
+
 const ISSUER = "http://192.168.1.10:3100";
 const CLIENT_ID = "dss-leave";
 const BASE_URL = "http://192.168.1.10:3700";
@@ -347,7 +368,7 @@ async function main() {
       `myPendingApprovalWhere 를 쓰는 곳이 ${uses.length - 1}군데뿐이다 — 셋(목록·건수·알림)이어야 한다`,
     );
     // 알림 질의가 조건을 손으로 다시 적지 않았는지.
-    const notify = data.slice(data.indexOf("export async function pendingApprovalNotifications"));
+    const notify = bodyOf(data, "pendingApprovalNotifications");
     assert.ok(notify.includes("myPendingApprovalWhere(me)"));
     assert.equal(
       /eq\(webApprovalSteps\.status/.test(notify),
@@ -418,9 +439,7 @@ async function main() {
 
   check("🔴 알림 줄에 사유를 싣지 않는다 — 포털을 거쳐 남의 화면에 그려진다", () => {
     const data = withoutComments(read("src/lib/leave/data.ts"));
-    const notify = data.slice(
-      data.indexOf("export async function pendingApprovalNotifications"),
-    );
+    const notify = bodyOf(data, "pendingApprovalNotifications");
     assert.equal(notify.includes("reason"), false, "🔴 알림 질의가 사유를 읽는다");
   });
 

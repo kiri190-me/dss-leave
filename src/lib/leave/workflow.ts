@@ -15,8 +15,10 @@ import { and, asc, eq, inArray } from "drizzle-orm";
 
 import { writeAudit } from "@/lib/audit";
 import type { Member, Viewer } from "@/lib/auth/guards";
+import { notifyPortalApprovalCreated } from "@/lib/auth/oidc";
 import { formatRange, isYmd, todayKst } from "@/lib/dates";
 import { db, type Tx } from "@/lib/db";
+import { env } from "@/lib/env";
 import { isUuid } from "@/lib/ids";
 import {
   LEAVE_TYPES,
@@ -27,9 +29,12 @@ import {
   type LeaveRequest,
   type LeaveType,
 } from "@/lib/db/schema";
+import { nudgeApprovalCreated } from "./approval-nudge";
 import { isMyStep } from "./approval-scope";
 import {
   approvalChainFor,
+  approvalNudgeCandidates,
+  hasPendingApprovalFor,
   liveSpansOf,
   loadHolidaySet,
   loadLedgerInput,
@@ -213,6 +218,48 @@ async function createWithChain(
   return { request, chainNames: chain.map((a) => a.name) };
 }
 
+/* ------------------------------------------------------------------ */
+/* 결재가 생긴 **뒤에** 포털을 쿡 찌른다 (2026-10-24)                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 포털에 「이 사람에게 결재가 생겼다」를 알려 결재 메일을 앞당긴다.
+ * 판단은 전부 leave/approval-nudge.ts 에 있고 여기 남은 일은 배선뿐이다.
+ *
+ * 🔴 **반드시 트랜잭션이 끝난 뒤에 부른다.** 이 파일에서 이 함수를 부르는
+ * 자리는 넷 다 `await db.transaction(...)` 이 **돌아온 뒤**, 즉 커밋이 끝난
+ * 자리다. 안에서 부르면 두 가지가 한꺼번에 깨진다:
+ *  · 포털이 죽은 날 **휴가 신청 자체가 실패**한다(예외가 롤백을 부른다).
+ *  · 아직 커밋되지 않은 행은 이 함수가 쓰는 조회에 보이지 않아, 알릴 사람을
+ *    한 명도 못 찾고 조용히 끝난다.
+ * 🔵 안전하게 하려고 `tx` 를 넘기는 것도 **안 된다** — 그것이 곧 트랜잭션 안
+ * 에서 부르는 일이다.
+ *
+ * 🔴 **던지지 않는다.** 여기까지 왔다는 것은 신청이 이미 저장됐다는 뜻이다.
+ * 실패를 삼켜도 되는 근거(포털의 주기 작업이 다음 바퀴에 줍는다)는
+ * approval-nudge.ts 머리말에 있다.
+ *
+ * ── 🔵 「새 차례가 생겼을 때만」으로 미리 가르지 않는다 ────────────────────
+ * 반려·확정·거둬들이기 뒤에도 이 함수를 그냥 부른다. 그 자리들은 열린 단계가
+ * 없어 후보 조회가 **빈 목록**을 돌려주고 포털은 불리지도 않는다 — 공용 조건
+ * (`myPendingApprovalWhere`)이 `PENDING` 단계와 `PENDING` 신청만 세기
+ * 때문이다. 여기서 미리 가르면 그 조건의 사본이 한 벌 더 생기고, 언젠가 한쪽
+ * 만 바뀌는 날 「결재는 넘어갔는데 메일이 안 간다」가 된다. 값은 색인을 타는
+ * 조회 한 번이다.
+ */
+async function nudgePortalApprovalCreated(requestId: string): Promise<void> {
+  // 포털이 없는 기계(임시 로그인만 쓰는 개발 PC)에서는 찌를 곳이 없다 — DB 를
+  // 한 번 더 읽을 이유도, 로그에 거절을 쌓을 이유도 없다.
+  // 🔵 `ssoConfigured` 는 설정이 없어도 **던지지 않는** 유일한 검사다(env.ts).
+  if (!env.ssoConfigured) return;
+
+  await nudgeApprovalCreated(requestId, {
+    listCandidates: approvalNudgeCandidates,
+    isPendingFor: hasPendingApprovalFor,
+    send: notifyPortalApprovalCreated,
+  });
+}
+
 /**
  * 「먼저 누가 결재하는가」. 순차라 언제나 목록의 첫 사람이 먼저다.
  * @param done 다 끝나면 무엇이 되는가 — "확정됩니다" · "취소됩니다"
@@ -349,6 +396,10 @@ export async function submitLeave(
   });
 
   if (!result) return fail("원래 휴가의 상태가 바뀌었습니다. 새로고침 후 다시 확인하세요.");
+  // 🔴 커밋이 끝난 자리다 — 새 신청(NEW)과 날짜 변경(CHANGE), 반려 뒤 다시
+  //    올린 신청까지 모두 이 길로 지나간다(반려는 그 자리에서 끊기므로 다시
+  //    받으려면 새 신청이고, 그 새 신청이 곧 여기다).
+  await nudgePortalApprovalCreated(result.request.id);
   return {
     ok: true,
     message: submittedMessage(result.chainNames),
@@ -398,6 +449,8 @@ export async function submitCancel(
   });
 
   if (!result) return fail("원래 휴가의 상태가 바뀌었습니다. 새로고침 후 다시 확인하세요.");
+  // 🔴 취소 신청(CANCEL)도 결재를 받는다 — 커밋 뒤에 똑같이 찌른다.
+  await nudgePortalApprovalCreated(result.request.id);
   return {
     ok: true,
     message:
@@ -571,10 +624,15 @@ export async function decideStep(
       },
       tx,
     );
-    return { finished, waitingFor };
+    return { finished, waitingFor, requestId: req.id };
   });
 
   if ("error" in outcome) return fail(outcome.error ?? "처리하지 못했습니다.");
+  // 🔴 **다음 단계 사람에게 새로 차례가 왔다.** 앞사람이 승인하면
+  //    `promoteNextStep` 이 잠들어 있던 단계를 깨우므로, 그 사람에게는 지금
+  //    막 결재가 **생긴** 것이다 — 신청할 때 한 번만 알리면 2단계부터는 메일이
+  //    주기 작업을 기다리게 된다. 커밋이 끝난 뒤에 찌른다.
+  await nudgePortalApprovalCreated(outcome.requestId);
   if (!approve) return { ok: true, message: "반려했습니다.", code: "rejected" };
   return {
     ok: true,
@@ -669,10 +727,14 @@ export async function skipStep(
       },
       tx,
     );
-    return { finished: next === null, waitingFor: remaining, label };
+    return { finished: next === null, waitingFor: remaining, label, requestId: req.id };
   });
 
   if ("error" in outcome) return fail(outcome.error ?? "처리하지 못했습니다.");
+  // 🔴 건너뛰기도 **다음 사람을 깨운다**(promoteNextStep). 깨어난 사람에게는
+  //    지금 막 결재가 생긴 것이므로 승인과 똑같이 찌른다 — 이 길을 빠뜨리면
+  //    막힌 결재를 푼 바로 그 건만 메일이 늦는다.
+  await nudgePortalApprovalCreated(outcome.requestId);
   return {
     ok: true,
     message: outcome.finished

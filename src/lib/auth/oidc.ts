@@ -833,3 +833,95 @@ export async function acknowledgePortalNotification(
 
   return true;
 }
+
+/* ------------------------------------------------------------------ */
+/* 「이 사람에게 결재가 생겼다」 — 결재 메일을 쿡 찌른다 (2026-10-24)      */
+/*                                                                     */
+/* 포털은 결재 메일을 **제가 주기적으로 물어** 보내고 있다. 그래서 결재가 */
+/* 생긴 순간이 아니라 그 다음 바퀴에서 메일이 나간다. 쓰는 분 요구가      */
+/* 「결재건이 생기자마자」라서, 결재가 생긴 **뒤에** 포털을 한 번 찔러     */
+/* 그 바퀴를 앞당긴다.                                                  */
+/*                                                                     */
+/* 🔴 **나가는 것은 「누구에게 생겼다」 하나뿐이다.** 신청자 이름도·날짜도 */
+/*    ·휴가 종류도 싣지 않는다. 포털은 이 번호를 받으면 그 사람의 결재를  */
+/*    **제 통로로 다시 물어**(이 시스템의 /api/integration/approvals) 아직 */
+/*    안 보낸 것에만 메일을 띄운다. 그래서 ① 이 시스템이 거짓을 보내도    */
+/*    메일 내용이 흔들리지 않고 ② 포털의 「보낸 기록」이 중복을 막는다.   */
+/*    몸통에 내용을 실으면 그 두 성질이 **동시에** 무너진다 — 부디 늘리지  */
+/*    말 것.                                                            */
+/*                                                                     */
+/* 🔵 못 찔러도 메일이 안 가는 것이 아니다. 포털의 주기 작업이 다음 바퀴에 */
+/*    같은 건을 줍는다 — 이 통로는 **빠르게 하는 것**이지 유일한 길이      */
+/*    아니다. 그래서 실패를 통째로 삼킬 수 있다.                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 결재가 생겼음을 포털에 알린다. 🔴 **어떤 일이 있어도 던지지 않는다** —
+ * 이 함수는 **휴가 신청이 이미 저장된 뒤**에 불리므로, 여기서 새는 예외는
+ * 「신청은 됐는데 화면에는 실패라고 뜨는」 가장 나쁜 모양이 된다. 통로가 아직
+ * 없어 404 가 오는 동안에도(다른 조각이 만드는 중이다) 똑같이 조용해야 한다.
+ *
+ * @param subs 결재할 사람의 **포털 번호**(= ID 토큰의 sub, `web_users.auth_sub`).
+ *             여럿이면 `approverSub` 를 여러 개 실어 한 번에 보낸다 — 왕복이
+ *             사람 수만큼 늘면 신청 한 번이 그만큼 느려진다.
+ *
+ * @returns 찔렀는가. 부르는 쪽은 이 값을 사람에게 보여 주지 않는다 —
+ *          로그와 검사를 위한 값이다.
+ */
+export async function notifyPortalApprovalCreated(
+  subs: readonly string[],
+): Promise<boolean> {
+  // 보낼 것이 없으면 아예 부르지 않는다 — 빈 몸통은 포털이 거절할 뿐이고,
+  // 부르는 것은 거절 한 줄을 로그에 쌓는 일이다(지움 쪽과 같은 판단).
+  const wanted = Array.from(
+    new Set(subs.filter((sub): sub is string => typeof sub === "string" && sub !== "")),
+  );
+  if (wanted.length === 0) return false;
+
+  const body = new URLSearchParams();
+  // 🔴 `append` 다(`set` 이 아니다) — 결재자가 여럿일 때 같은 이름의 칸이
+  //    여러 개 실려야 한다. `set` 이면 마지막 한 사람만 나가고, 빠진 사람은
+  //    「메일이 조금 늦게 온다」로만 드러나 아무도 신고하지 않는다.
+  for (const sub of wanted) body.append("approverSub", sub);
+
+  let response: Response;
+  try {
+    // 🔴 env 의 getter 는 값이 없으면 던진다 — 그래서 try **안**에서 읽는다
+    //    (이 파일의 다른 세 통로와 같은 모양).
+    const credentials = `${encodeURIComponent(env.ssoClientId)}:${encodeURIComponent(
+      env.ssoClientSecret,
+    )}`;
+
+    response = await fetch(`${env.ssoIssuer}/api/integration/approval-created`, {
+      method: "POST",
+      headers: {
+        authorization: `Basic ${Buffer.from(credentials, "utf8").toString("base64")}`,
+        "content-type": "application/x-www-form-urlencoded",
+        accept: "application/json",
+      },
+      body: body.toString(),
+      cache: "no-store",
+      // 🔴 상한이 **반드시** 있어야 한다. 이 왕복은 사람이 [신청] 을 누른 뒤에
+      //    붙는 시간이라, 포털이 응답 없는 주소가 되면 상한이 없는 만큼 그대로
+      //    신청 화면이 멈춰 선 것처럼 보인다(알림 쪽과 같은 값, 2초).
+      signal: AbortSignal.timeout(NOTIFICATIONS_TIMEOUT_MS),
+    });
+  } catch (error) {
+    // 🔴 남기는 것은 오류의 **종류**뿐이다(TimeoutError·TypeError …).
+    //    포털 번호는 사람을 가리키는 값이라 찍지 않는다.
+    console.error(
+      "[sso] 결재 알림을 찌르지 못했습니다:",
+      error instanceof Error ? error.name : "unknown",
+    );
+    return false;
+  }
+
+  if (!response.ok) {
+    // 🔵 통로가 아직 없는 동안에는 여기로 404 가 온다 — 고장이 아니다.
+    //    상태만 남기는 것은 이 파일의 다른 통로와 같은 판단이다.
+    console.error("[sso] 결재 알림 통로 거절:", response.status);
+    return false;
+  }
+
+  return true;
+}

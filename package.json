@@ -22,6 +22,7 @@
     "test:bell": "tsx scripts/test-notification-bell.ts",
     "test:portal": "tsx scripts/test-portal-notifications.ts",
     "test:approvals": "tsx scripts/test-portal-approvals.ts",
+    "test:nudge": "tsx scripts/test-approval-nudge.ts",
     "test:calendar": "tsx scripts/test-calendar-width.ts",
     "test:leave": "tsx scripts/test-leave-rules.ts",
     "test:workflow": "tsx scripts/test-workflow.ts"

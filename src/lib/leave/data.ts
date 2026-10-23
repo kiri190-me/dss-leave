@@ -1,7 +1,7 @@
 /**
  * 휴가 데이터 읽기. 계산 규칙은 rules.ts, 쓰기(신청·결재)는 workflow.ts 에 있다.
  */
-import { and, asc, desc, eq, gte, inArray, lte, ne, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lte, ne, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 
 import type { EmployeeWithRank, Viewer } from "@/lib/auth/guards";
@@ -19,11 +19,16 @@ import {
   webLeaveSettings,
   webRanks,
   webTenureRules,
+  webUsers,
   type ApprovalStep,
   type Holiday,
   type LeaveRequest,
   type Rank,
 } from "@/lib/db/schema";
+// 🔴 **타입만** 빌려 온다(import type — 남는 코드가 없다). 「결재가 생겼다」를
+//    포털에 알리는 판단이 제 계약으로 들고 있는 모양이고, 아래 조회가 그
+//    모양으로 돌려준다. 두 벌로 적지 않으려는 것이다.
+import type { ApprovalNudgeCandidate } from "./approval-nudge";
 import { myStepCondition, type Decider } from "./approval-scope";
 import { approvalTurnLabel } from "./labels";
 import {
@@ -659,6 +664,124 @@ export async function pendingApprovalsForPortal(
     .innerJoin(webEmployees, eq(webEmployees.id, webLeaveRequests.employeeId))
     .where(myPendingApprovalWhere(me))
     .orderBy(asc(webLeaveRequests.createdAt));
+}
+
+/* ------------------------------------------------------------------ */
+/* 거꾸로 — 「이 결재는 누구에게 생겼나」 (포털 쿡 찌르기, 2026-10-24)     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 결재를 기다리는 단계에 **걸릴 수 있는 사람** 한 줄.
+ *
+ * 🔴 모양을 여기서 다시 적지 않는다 — 이 줄을 받아 쓰는 판단
+ * (leave/approval-nudge.ts)이 제 계약으로 들고 있고, 여기서는 **그것을 그대로
+ * 빌려 쓴다.** 두 벌로 적으면 칸 하나가 어긋나도 tsc 가 침묵하는 자리가
+ * 생긴다(같은 이름의 타입 둘은 모양이 같은 동안 서로 통한다).
+ *
+ * 🔴 「걸린다」가 아니라 **「걸릴 수 있다」**다. 아래 조회는 일부러 넓게 고르고,
+ * 정말 그 사람 차례인지는 `hasPendingApprovalFor` 가 **공용 조건**
+ * (`myPendingApprovalWhere`)으로 다시 가른다. 까닭은 그 함수 머리말에 있다.
+ */
+export type { ApprovalNudgeCandidate };
+
+/**
+ * 이 신청의 **지금 열린 단계**에 걸릴 수 있는 사람들. 포털을 쿡 찌르기 직전에
+ * 「누구에게 생겼나」를 모으는 자리다.
+ *
+ * ── 🔴 왜 일부러 넓게 고르는가 ──────────────────────────────────────────
+ * 「이 사람이 지금 이 신청을 결재할 차례인가」의 답은 이 저장소에 **한 곳**
+ * 뿐이다(`myPendingApprovalWhere` → `myStepCondition`). 그것을 거꾸로 — 「이
+ * 단계는 누구 것인가」로 — 다시 적으면 판정이 두 벌이 되고, 한쪽만 고쳐지는
+ * 날 「결재함엔 떴는데 메일이 안 왔다」(또는 그 반대)가 된다.
+ *
+ * 그래서 여기서는 **후보만** 모은다. 좁히는 조건(내 신청 제외 · 직급 결재권 ·
+ * 신청이 아직 결재 중인가)은 하나도 적지 않고, 바로 아래
+ * `hasPendingApprovalFor` 가 그 공용 조건 **그대로**로 한 명씩 가른다. 넓게
+ * 골라 좁히는 쪽이 안전하다 — 후보가 남아도는 것은 쓸데없는 확인 질의 한 번
+ * 으로 끝나지만, 후보에서 빠지면 그 사람에게는 메일이 영영 안 간다.
+ *
+ * 넓게 고른다는 것은 구체적으로 이렇다:
+ *  · 사람으로 박힌 단계(지금 만들어지는 모든 단계)는 그 사람.
+ *  · 사람 칸이 빈 **옛 단계**는 그 직급의 직원 **전부** — 직급의 결재권을 여기서
+ *    보지 않는다(공용 조건이 본다).
+ *  · 신청자 자신도 빼지 않는다(공용 조건의 `ne(...employeeId)` 가 뺀다).
+ *  · 퇴사·삭제된 직원도 빼지 않는다 — 공용 조건이 직원의 생사를 보지 않기
+ *    때문이다. 그 사람을 불러도 포털은 **제 통로로 다시 물어**(이 파일의
+ *    `pendingApprovalsForPortal` → findPortalActor → loadEmployee) 빈 답을
+ *    받으므로 메일이 나가지 않는다. 여기서 미리 거르면 공용 조건에 없는
+ *    규칙을 한 줄 새로 쓰는 셈이 된다.
+ *
+ * 🔴 **계정 쪽은 거른다** — 정지·삭제된 계정은 `findPortalActor` 가 없는 것으로
+ * 보므로(auth/portal-actor.ts) 그 번호로 포털을 불러 봐야 포털이 다시 물었을
+ * 때 빈 답이 나온다. 조건을 **그 함수와 글자까지 맞춰** 둔다.
+ *
+ * 🔵 이 파일에서 이 함수만 `async` 가 아니다. drizzle 의 질의 만들개는
+ * `await` 하는 순간에야 DB 에 붙으므로, `async` 를 떼면 **만들어진 SQL 을 DB
+ * 없이 펼쳐 볼 수 있다**(검사가 `.toSQL()` 로 읽는다 —
+ * scripts/test-approval-nudge.ts). 여기는 이 저장소에서 유일하게 「조건을
+ * 거꾸로 적은」 자리라, 누가 뒤에 좁히는 줄을 한 줄 더하면 조용히 결재자가
+ * 빠진다. 그것을 잡는 검사가 이 한 줄에 기대고 있다. 부르는 쪽에서 `await`
+ * 하는 것은 똑같다.
+ */
+export function approvalNudgeCandidates(
+  requestId: string,
+): Promise<ApprovalNudgeCandidate[]> {
+  return db
+    .selectDistinct({
+      employeeId: webEmployees.id,
+      rankId: webEmployees.rankId,
+      isApprover: webRanks.canApprove,
+      authSub: webUsers.authSub,
+    })
+    .from(webApprovalSteps)
+    // 사람으로 박힌 단계는 그 사람, 사람 칸이 빈 옛 단계는 그 직급의 직원 전부.
+    // 🔴 이 두 갈래는 approval-scope.ts 의 `myStepCondition` 과 같은 갈래다 —
+    //    거기가 바뀌면 여기도 함께 넓혀야 한다(좁히는 일은 저쪽이 한다).
+    .innerJoin(
+      webEmployees,
+      or(
+        eq(webApprovalSteps.approverEmployeeId, webEmployees.id),
+        and(
+          isNull(webApprovalSteps.approverEmployeeId),
+          eq(webApprovalSteps.rankId, webEmployees.rankId),
+        ),
+      )!,
+    )
+    .innerJoin(webRanks, eq(webRanks.id, webEmployees.rankId))
+    .leftJoin(
+      webUsers,
+      and(
+        eq(webUsers.employeeId, webEmployees.id),
+        eq(webUsers.isActive, true),
+        eq(webUsers.isDeleted, false),
+      )!,
+    )
+    .where(
+      and(
+        eq(webApprovalSteps.requestId, requestId),
+        eq(webApprovalSteps.status, "PENDING"),
+        eq(webApprovalSteps.isDeleted, false),
+      ),
+    );
+}
+
+/**
+ * 「이 신청이 지금 이 사람의 결재함에 서 있는가」 — 결재함·건수·알림·승인함이
+ * 쓰는 그 **한 문장**(`myPendingApprovalWhere`)에 신청 하나를 더 좁혀 묻는다.
+ *
+ * 🔴 조건을 한 줄도 다시 적지 않는다. 포털을 찌르는 쪽이 「누구에게 갈까」를
+ * 스스로 판단하면 그 판단이 결재함과 갈라지고, 갈라진 쪽이 메일이면 「결재할
+ * 것이 없는 사람에게 결재 메일이 간다」가 된다. 받는 사람은 그 메일이 진짜인지
+ * 아닌지 구별할 방법이 없다.
+ */
+export async function hasPendingApprovalFor(me: Decider, requestId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ one: sql<number>`1` })
+    .from(webApprovalSteps)
+    .innerJoin(webLeaveRequests, eq(webLeaveRequests.id, webApprovalSteps.requestId))
+    .where(and(myPendingApprovalWhere(me), eq(webApprovalSteps.requestId, requestId)))
+    .limit(1);
+  return row !== undefined;
 }
 
 /** 내가 처리한 결재 (최근 순) */
