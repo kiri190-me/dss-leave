@@ -68,7 +68,15 @@ export default async function ApprovalsPage({
             {items.map((it) => {
               const bal = balances.get(it.id);
               return (
-                <li key={it.id} className="rounded-lg border border-slate-200 bg-white p-4">
+                // 🔴 id 는 통합 승인함(dss-approvals)이 쓴다 — [승인하기] 를
+                // 누르면 `/approvals#approval-{stepId}` 로 와서 이 줄까지 바로
+                // 스크롤된다(leave/portal-approvals.ts 머리말). 새 화면을 만들지
+                // 않고 쓸 수 있는 가장 좁은 주소라 더했다 — 기존 동작은 그대로다.
+                <li
+                  key={it.id}
+                  id={`approval-${it.stepId}`}
+                  className="rounded-lg border border-slate-200 bg-white p-4"
+                >
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="font-semibold text-slate-900">{it.applicantName}</span>
                     <span className="text-xs text-slate-500">{it.applicantRank}</span>

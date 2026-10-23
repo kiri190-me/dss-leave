@@ -621,6 +621,46 @@ export async function pendingApprovalNotifications(
     .orderBy(asc(webLeaveRequests.startDate));
 }
 
+/**
+ * 통합 승인함(`dss-approvals`)에 내줄 목록 — **같은 조건**(myPendingApprovalWhere),
+ * 위 알림과 거의 같은 투영이지만 `requestedAt` 을 더 싣는다.
+ *
+ * 🔴 `pendingApprovalNotifications` 에 칸을 얹지 않고 **따로 둔 것**은, 그 함수가
+ * 이미 포털 종 통로가 쓰고 있어 거기 칸을 늘리면 종 쪽도 다시 시험해야 하기
+ * 때문이다 — 이 시스템의 질의 셋(목록·건수·알림)이 이미 같은 모양으로 나뉘어
+ * 있는 것과 같은 자리다. 조건은 넷 다 `myPendingApprovalWhere` 하나를 그대로
+ * 부른다 — 승인함만 다른 문장을 쓰면 「알림에는 떴는데 승인함엔 없다」가 된다.
+ */
+export type PendingApprovalForPortal = PendingApprovalNotification & {
+  /**
+   * 이 신청이 지금 결재를 기다리기 시작한 때(web_leave_requests.created_at).
+   * 변경·취소 요청은 원본과 **다른 신청 행**이라 다시 올린 시각이 그대로 찍힌다
+   * — 기다린 시간을 실제로 센 값이다.
+   */
+  requestedAt: Date;
+};
+
+export async function pendingApprovalsForPortal(
+  me: Decider,
+): Promise<PendingApprovalForPortal[]> {
+  return db
+    .select({
+      stepId: webApprovalSteps.id,
+      applicantName: webEmployees.name,
+      kind: webLeaveRequests.kind,
+      leaveType: webLeaveRequests.leaveType,
+      startDate: webLeaveRequests.startDate,
+      endDate: webLeaveRequests.endDate,
+      days: webLeaveRequests.days,
+      requestedAt: webLeaveRequests.createdAt,
+    })
+    .from(webApprovalSteps)
+    .innerJoin(webLeaveRequests, eq(webLeaveRequests.id, webApprovalSteps.requestId))
+    .innerJoin(webEmployees, eq(webEmployees.id, webLeaveRequests.employeeId))
+    .where(myPendingApprovalWhere(me))
+    .orderBy(asc(webLeaveRequests.createdAt));
+}
+
 /** 내가 처리한 결재 (최근 순) */
 export async function decidedBy(employeeId: string, limit = 30) {
   const applicant = alias(webEmployees, "applicant");
