@@ -34,30 +34,44 @@ import type { StoredPortalDelegation } from "@/lib/leave/portal-delegation-sync"
  * 조회해 보고 갈라 쓰는 방식은 두 요청이 겹칠 때 **둘 다 「없다」를 보고 둘 다
  * 넣는다.**
  *
- * 🔴 **`revoked_at` 도 덮어쓴다** — 포털이 보낸 값 그대로다. 거의 늘 비어 있고
- * (살아 있는 줄) 그때는 비운다. 안 덮어쓰면 한 번 거둔 번호로 다시 맡겼을 때
- * 「포털에는 살아 있는데 여기서는 죽어 있는」 줄이 남고, 값이 왔는데 버리면 그
- * 반대가 된다. 🔵 **둘 다 아무 표시도 안 나는 어긋남**이라 한쪽만 막아서는
- * 소용이 없다 — 줄 전체를 포털이 가진 모양으로 맞추는 것이 이 함수의 일이다.
- * 🔵 철회와 다시 맡기기가 **엇갈려 도착하면** 거꾸로 덮일 수 있다. 그 틈을
- * 막는 장치가 어긋남 점검(설계 B-14)이고 통로 규약에는 차례를 가릴 값이 없다.
+ * ── 🔴 `revoked_at` 만 **한 방향**이다 ─────────────────────────────────────
+ * 다른 칸은 포털이 보낸 값으로 전부 덮는데(저쪽이 그 줄의 주인이다), 이 칸만
+ * **덮어쓸 때** 갈래가 둘이다:
+ *  · **값이 실려 왔으면 그대로 적는다.** 버리면 「포털은 거뒀는데 여기서는 살아
+ *    있는」 줄이 남고, 설계 B-13 이 **그쪽이 더 위험하다**고 못 박았다.
+ *  · 🔴 **널이면 이미 적힌 값을 지우지 않는다.** 통로 규약에 **차례를 가릴 값이
+ *    없어서**, 지정과 철회가 길에서 뒤바뀌면 나중에 닿은 것이 이긴다. 널까지
+ *    덮으면 늦게 닿은 이 문장이 **거둔 위임을 되살리고**, 그 사람은 **아무 오류
+ *    없이** 남의 결재를 대신 누를 수 있게 된다.
+ * 🔵 **이 비대칭으로 잃는 것이 없다.** 포털은 새 지정에 **새 `id`** 를 쓰므로,
+ *    거둔 줄을 같은 번호로 되살리라는 전파가 정상적으로 오는 길이 없다.
+ * 🔴 **넣는 자리(`values`)는 그대로다** — 처음 받는 줄은 거둔 채로 와도 그대로
+ *    적는다. 비대칭은 **충돌했을 때**만의 이야기다.
+ * 🔴 **A/S·재고관리도 같은 규칙이다**(2026-11-16 에 셋을 맞췄다). 다음 사람이
+ *    「왜 여기만 조건부지, 일관성 없네」로 되돌리기 가장 쉬운 자리다 — 한 집만
+ *    되돌리면 같은 전파가 시스템마다 다른 줄을 남기고, 그것은 어긋남 점검
+ *    (설계 B-14)에서야 드러난다.
  */
 export function portalDelegationUpsertQuery(row: StoredPortalDelegation) {
-  const values = {
+  const always = {
     delegatorEmployeeId: row.delegatorEmployeeId,
     delegateEmployeeId: row.delegateEmployeeId,
     startsAt: row.startsAt,
     endsAt: row.endsAt,
     reason: row.reason,
-    revokedAt: row.revokedAt,
     // 🔴 **언제 받아 적었나**를 덮어쓸 때도 새로 찍는다 — 어긋남 점검이 「이
     //    시스템이 마지막으로 들은 때」로 읽는 값이다.
     syncedAt: new Date(),
   };
   return db
     .insert(webPortalApprovalDelegations)
-    .values({ id: row.id, ...values })
-    .onConflictDoUpdate({ target: webPortalApprovalDelegations.id, set: values });
+    .values({ id: row.id, ...always, revokedAt: row.revokedAt })
+    .onConflictDoUpdate({
+      target: webPortalApprovalDelegations.id,
+      // 🔴 널이면 `revoked_at` 을 **아예 안 싣는다**(위 머리말의 한 방향 규칙).
+      //    실으면 SQL 이 `"revoked_at" = null` 을 쓰고 거기서 철회가 되살아난다.
+      set: { ...always, ...(row.revokedAt === null ? {} : { revokedAt: row.revokedAt }) },
+    });
 }
 
 export async function upsertPortalDelegation(row: StoredPortalDelegation): Promise<void> {

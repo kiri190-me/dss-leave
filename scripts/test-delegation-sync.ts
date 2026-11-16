@@ -505,6 +505,28 @@ async function main() {
     return params[Number(자리[1]) - 1];
   }
 
+  /** 🔴 거꾸로 — 덮어쓰는 부분에 그 칸이 **아예 없어야** 할 때. */
+  function notOverwritten(sql: string, column: string): void {
+    const 덮어쓰는부분 = sql.slice(sql.indexOf("do update"));
+    assert.ok(
+      !new RegExp(`"${column}"`).test(덮어쓰는부분),
+      `덮어쓸 때 ${column} 을 건드린다: ${덮어쓰는부분}`,
+    );
+  }
+
+  /** 넣는 부분(`insert … values …`)에서 그 칸에 실린 값을 꺼낸다. */
+  function insertedValue(sql: string, params: readonly unknown[], column: string): unknown {
+    const 짝 = /insert into "[^"]+" \(([^)]*)\) values \(([^)]*)\)/.exec(sql);
+    assert.ok(짝, `넣는 문장의 모양이 바뀌었다: ${sql}`);
+    const 칸들 = 짝[1].split(", ").map((c) => c.replaceAll('"', ""));
+    const 값들 = 짝[2].split(", ");
+    const i = 칸들.indexOf(column);
+    assert.ok(i >= 0, `넣을 때 ${column} 을 안 싣는다 — 칸: ${짝[1]}`);
+    const 자리 = /^\$(\d+)$/.exec(값들[i]);
+    assert.ok(자리, `${column} 자리에 상수가 구워졌다: ${값들[i]}`);
+    return params[Number(자리[1]) - 1];
+  }
+
   check("🔴 적는 문장이 `on conflict (id) do update` 다", () => {
     const { sql, params } = upsertSql(null);
     assert.match(sql, /insert into "web_portal_approval_delegations"/);
@@ -517,19 +539,42 @@ async function main() {
     assert.equal(params[0], DELEGATION_ID);
   });
 
-  check("🔴 덮어쓸 때 철회 표시도 **포털이 보낸 값 그대로** 간다", () => {
-    // 살아 있는 줄이면 비운다 — 안 비우면 한 번 거둔 번호로 다시 맡겼을 때
-    // 포털에만 살아 있는 줄이 남는다.
-    const 살아있음 = upsertSql(null);
-    assert.equal(overwritten(살아있음.sql, 살아있음.params, "revoked_at"), null);
-    // 🔴 거둔 줄로 오면 그 시각이 그대로 실린다 — 버리면 그 반대 어긋남이 된다.
+  check("🔴 덮어쓸 때 값이 실려 온 철회 표시는 **그대로** 간다", () => {
+    // 버리면 「포털은 거뒀는데 여기서는 살아 있는」 줄이 남는다(설계 B-13 이 더
+    // 위험하다고 못 박은 쪽). 🔵 「한 방향」은 **널이 안 지운다**는 뜻이지
+    // 「영영 못 고친다」는 뜻이 아니다.
     const 거둠 = upsertSql(new Date("2027-03-04T00:00:00.000Z"));
     assert.equal(
       overwritten(거둠.sql, 거둠.params, "revoked_at"),
       "2027-03-04T00:00:00.000Z",
     );
     // 🔵 넣는 자리에도 같은 값이 간다(처음 받는 줄이 거둔 줄일 수 있다).
-    assert.ok(거둠.params.includes("2027-03-04T00:00:00.000Z"));
+    assert.equal(
+      insertedValue(거둠.sql, 거둠.params, "revoked_at"),
+      "2027-03-04T00:00:00.000Z",
+    );
+  });
+
+  check("🔴 덮어쓸 때 **널은 이미 적힌 철회를 지우지 않는다** — 거둔 위임이 되살아나는 길", () => {
+    const 살아있음 = upsertSql(null);
+    // 🔴 통로 규약에 차례를 가릴 값이 없다. 지정과 철회가 엇갈려 닿으면 나중에
+    //    닿은 것이 이기는데, 여기서 널까지 덮으면 늦게 닿은 이 문장이 거둔 위임을
+    //    되살리고 그 사람은 **아무 오류 없이** 남의 결재를 누를 수 있게 된다.
+    notOverwritten(살아있음.sql, "revoked_at");
+    // 🔵 **그 옆에서 다른 칸은 덮는지 함께 잰다** — 안 그러면 「충돌했을 때 아무것도
+    //    안 덮는」 구현도 위 단언을 공짜로 통과한다.
+    assert.equal(overwritten(살아있음.sql, 살아있음.params, "reason"), "출장");
+    assert.equal(
+      overwritten(살아있음.sql, 살아있음.params, "delegate_employee_id"),
+      EMP_대리인,
+    );
+    assert.equal(
+      overwritten(살아있음.sql, 살아있음.params, "ends_at"),
+      "2027-03-08T00:00:00.000Z",
+    );
+    // 🔴 **넣는 자리는 그대로다** — 처음 받는 줄은 살아 있어야 하므로 널을 싣는다.
+    //    여기까지 빼면 그 칸이 DB 기본값에 맡겨진다.
+    assert.equal(insertedValue(살아있음.sql, 살아있음.params, "revoked_at"), null);
   });
 
   check("철회 문장은 번호로 찾아 고치고, 고친 줄이 있었는지 돌려준다", () => {

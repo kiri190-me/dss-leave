@@ -89,7 +89,12 @@ export type StoredPortalDelegation = {
   startsAt: Date;
   endsAt: Date;
   reason: string;
-  /** 비어 있으면 살아 있는 줄. 🔴 포털이 보낸 값 **그대로**다. */
+  /**
+   * 비어 있으면 살아 있는 줄. 🔴 포털이 보낸 값 **그대로**다.
+   * 🔴 다만 **이미 있던 줄을 덮어쓸 때** 널은 적힌 값을 지우지 않는다 — 엇갈려 닿은
+   * 전파가 거둔 위임을 되살리는 길을 막는다(`auth/portal-delegation-store.ts` 의
+   * `portalDelegationUpsertQuery` 머리말).
+   */
   revokedAt: Date | null;
 };
 
