@@ -24,6 +24,7 @@
     "test:approvals": "tsx scripts/test-portal-approvals.ts",
     "test:nudge": "tsx scripts/test-approval-nudge.ts",
     "test:delegation": "tsx scripts/test-approval-delegation.ts",
+    "test:delegation-sync": "tsx scripts/test-delegation-sync.ts",
     "test:calendar": "tsx scripts/test-calendar-width.ts",
     "test:leave": "tsx scripts/test-leave-rules.ts",
     "test:workflow": "tsx scripts/test-workflow.ts"

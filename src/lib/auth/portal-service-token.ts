@@ -60,6 +60,21 @@ export const PORTAL_TOKEN_PURPOSES = {
   notificationSettingsRead: "dss.notification-settings.read",
   /** 알림 설정 저장. */
   notificationSettingsWrite: "dss.notification-settings.write",
+  /**
+   * 🔴 **결재권 위임 전파**(2026-11-16, 설계 B-12). 포털이 통합 승인함에서
+   * 지정·철회한 위임을 각 시스템에 **써 줄 때** 쓴다.
+   *
+   * 🔴 **이 글자는 아직 포털에 없다.** 알림 쪽 셋과 달리, 이 값은 포털이 먼저
+   * 굽기 시작한 뒤에 여기서 요구하기 시작한 것이 아니라 **받는 쪽이 먼저
+   * 적었다** — 전파하는 조각이 아직 포털에 없기 때문이다. 그래서 포털이 이
+   * 글자를 굽기 전까지 이 통로는 **전부 401** 이다.
+   * 🟢 그 방향이 맞다. 위임을 쓰는 문을 **알림 읽기용 토큰으로 열 수 없어야**
+   * 한다(최소 권한). 느슨하게 열어 두면 포털이 잘못 구워도 아무도 모른 채
+   * 돌아간다.
+   * 🔴 **A/S·재고관리와 글자가 같아야 한다** — 세 시스템이 같은 포털에게서 같은
+   * 모양의 토큰을 받는다. 바꾸려면 네 곳(포털 + 셋)을 함께 고친다.
+   */
+  delegationsWrite: "dss.delegations.write",
 } as const;
 
 export type PortalTokenPurpose =

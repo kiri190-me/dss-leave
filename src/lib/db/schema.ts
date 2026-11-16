@@ -3,6 +3,7 @@ import {
   boolean,
   check,
   date,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -499,6 +500,124 @@ export const webApprovalSteps = pgTable(
 );
 
 /* ------------------------------------------------------------------ */
+/* web_portal_approval_delegations — 포털이 써 주는 결재권 위임          */
+/* 2026-11-16: 「그때그때 묻는다」에서 「포털이 써 준다」로 (설계 B-12)   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 결재권 위임 — **통합 승인함에서 지정하고 포털이 여기 써 준 줄**이다.
+ *
+ * ── ⓐ 이 표의 주인은 포털이다 ──────────────────────────────────────────
+ * 🔴 `id` 에 **기본값이 없다.** 포털이 정한 번호를 그대로 받아 적는다. 같은 줄을
+ * 양쪽이 **같은 번호**로 가리켜야 철회와 어긋남 점검이 맞는다(설계 B-12 의 5번).
+ * 여기서 번호를 새로 만들면 포털이 「그 줄을 거둬라」라고 말할 길이 없어진다.
+ *
+ * ── ⓑ 여기서는 되돌릴 수 없다 ──────────────────────────────────────────
+ * 🔴 이 시스템에는 위임을 지정·철회하는 화면이 **없고 만들지도 않는다**(설계
+ * B-9). 지정도 철회도 통합 승인함에서 하고, 그 결과가 통로
+ * (`/api/integration/delegations`)로 들어와 이 표에 적힌다. 그러니 이 표의 줄을
+ * 손으로 고치면 **포털과 어긋난 채 아무 표시도 나지 않는다** — 다음 전파가 올
+ * 때까지 영영 조용하다(그 어긋남을 찾아내는 장치가 설계 B-14 다).
+ *
+ * ── ⓒ 🔴 열쇠가 `web_employees.id` 인 까닭 ────────────────────────────
+ * 이 집은 **로그인 계정(`web_users`)과 직원 명단(`web_employees`)이 다른 표**이고,
+ * 결재 권한은 **명단 번호**가 쥔다 — 결재 단계가 가리키는 것이
+ * `web_approval_steps.approver_employee_id` 다. 포털은 제 번호(`sub`)로 보내므로
+ * 받는 쪽이 **두 단**으로 바꿔 적는다:
+ *
+ *     포털 sub → web_users.auth_sub → web_users.employee_id → web_employees.id
+ *
+ * 🔴 중간 단이 **NULL 일 수 있다**(포털 로그인은 됐지만 아직 명단에 안 이어진
+ * 계정 — 2026-11-16 운영 실측으로 8명 중 1명). 그 사람은 여기서 결재할 수
+ * 없으므로 위임도 뜻이 없다 — 통로가 **줄을 안 만들고 `not_applicable`** 로
+ * 답한다(leave/portal-delegation-sync.ts). 계정 번호를 적어 두면 결재 판정 때마다
+ * 두 단을 다시 밟아야 하고, 그 사이에 관리자가 계정 연결을 바꾸면 **위임이 말없이
+ * 다른 사람에게 옮겨 간다.**
+ *
+ * ── ⓓ 2026-11-16 의 방식 전환(B-12) ───────────────────────────────────
+ * 그 전에는 결재할 때마다 포털에 물었다(B-3). 뒤집은 까닭은 결재 길목에서 망
+ * 호출을 없애려는 것이고, 그래서 **포털이 지정·철회할 때 전파하고 각 시스템은 제
+ * 표만 읽는다.** 🔵 아직 **읽는 쪽은 안 바뀌었다** — 묻는 길을 걷어내고 이 표를
+ * 보도록 잇는 것은 다음 조각의 일이다. 그때까지 이 표는 **받아 적기만** 한다.
+ *
+ * ── ⓔ 🟢 이 집에는 자체 위임이 없다 ───────────────────────────────────
+ * A/S·재고관리에는 저희 손으로 만든 위임 표가 따로 있어 **두 출처가 한 화면에
+ * 섞인다**(설계 D-2). 여기에는 그런 표가 **애초에 없었다** — 설계 D-5 의
+ * 2026-11-16 조사에서 이 저장소에는 「위임」이라는 낱말 자체가 한 번도 안
+ * 나왔다(포털에 묻는 코드가 그날 처음 들어왔다). 그래서 섞일 것이 없고, 이름에
+ * `portal_` 을 붙인 것은 출처를 적어 두라는 B-12 의 3번을 **표 이름 하나로**
+ * 갚은 것이다.
+ *
+ * ── 칸에 대하여 ────────────────────────────────────────────────────────
+ * 🔴 **소프트 삭제 4칸을 두지 않았다.** 이 집의 규칙은 「물리 삭제를 하지
+ * 않는다」인데 이 표는 **아무도 줄을 지우지 않는다** — 살았나 죽었나는 포털이
+ * 보내 준 `revoked_at` 하나가 정하고, 그 옆에 `is_deleted` 를 두면 「둘이
+ * 엇갈리면 무엇이 이기는가」를 아무도 답할 수 없다. 같은 까닭으로 `revoked_at`
+ * 을 쓰는 `web_sessions` 에도 그 네 칸이 없다.
+ * 🔵 `synced_at` 하나가 `created_at`·`updated_at` 자리를 겸한다 — **언제 받아
+ * 적었나**가 이 줄에서 이쪽이 아는 유일한 시각이다(만든 시각은 포털이 안다).
+ */
+export const webPortalApprovalDelegations = pgTable(
+  "web_portal_approval_delegations",
+  {
+    /** 🔴 포털이 정한 번호. 기본값이 없다 — 위 ⓐ. */
+    id: uuid("id").primaryKey(),
+    /** 결재권을 맡긴 사람(명단 번호). 🔴 계정 번호가 아니다 — 위 ⓒ. */
+    delegatorEmployeeId: uuid("delegator_employee_id").notNull(),
+    /** 대신 결재할 사람(명단 번호). */
+    delegateEmployeeId: uuid("delegate_employee_id").notNull(),
+    /** 기간. 포털이 보낸 값 그대로 적는다 — 판정은 이 두 칸으로 한다. */
+    startsAt: timestamp("starts_at", { withTimezone: true }).notNull(),
+    endsAt: timestamp("ends_at", { withTimezone: true }).notNull(),
+    /** 맡긴 까닭. 없으면 빈 글자다(통로 규약) — null 과 갈라 둘 이유가 없다. */
+    reason: text("reason").notNull().default(""),
+    /**
+     * 비어 있으면 살아 있는 줄이다. 🔴 **값을 정하는 것은 언제나 포털**이고
+     * (위 ⓑ) 철회 통보뿐 아니라 **지정 통보에 실려 오기도 한다** — 포털이 줄을
+     * 통째로 보내면 거둔 줄도 그 모양 그대로 온다.
+     */
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    /** 🔴 **언제 받아 적었나.** 어긋남 점검(설계 B-14)이 이 값을 본다. */
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // 🔴 이름을 손으로 적는다. drizzle 이 자동으로 짓는 이름
+    //    (`..._delegator_employee_id_web_employees_id_fk`)은 73자라 PostgreSQL 이
+    //    **63자에서 말없이 잘라** 저장한다 — 스키마가 아는 이름과 DB 에 있는
+    //    이름이 달라지고, 나중에 제약을 고칠 때 「없는 제약」으로 보인다.
+    foreignKey({
+      columns: [t.delegatorEmployeeId],
+      foreignColumns: [webEmployees.id],
+      name: "web_portal_approval_delegations_delegator_fk",
+    }),
+    foreignKey({
+      columns: [t.delegateEmployeeId],
+      foreignColumns: [webEmployees.id],
+      name: "web_portal_approval_delegations_delegate_fk",
+    }),
+    // 기간은 반열린 구간이다 — 끝이 시작과 같으면 **하루도 못 쓰는 위임**이
+    // 저장되고, 뒤집히면 영원히 안 열린다. 둘 다 오류 없이 조용하다.
+    check(
+      "web_portal_approval_delegations_period_ck",
+      sql`${t.endsAt} > ${t.startsAt}`,
+    ),
+    // 🔴 자기에게 맡기는 줄은 아무것도 넓히지 않으면서(본인 단계는 원래 눌린다)
+    //    「위임을 걸어 뒀다」는 착각만 만든다.
+    check(
+      "web_portal_approval_delegations_self_ck",
+      sql`${t.delegateEmployeeId} <> ${t.delegatorEmployeeId}`,
+    ),
+    // 판정이 묻는 차례 그대로다 — 「내가(대리인) 지금 살아 있는 위임으로 누구를
+    // 대신할 수 있나」. 🔵 지금은 아무도 안 읽는다(읽는 쪽은 다음 조각).
+    index("web_portal_approval_delegations_delegate_idx").on(
+      t.delegateEmployeeId,
+      t.revokedAt,
+      t.endsAt,
+    ),
+  ],
+);
+
+/* ------------------------------------------------------------------ */
 /* web_leave_adjustments — 관리자의 일수 조정 (+/-)                     */
 /* 자동 계산이 맞지 않는 경우(결근, 입사 첫해 비례분 등)를 사람이 메운다  */
 /* ------------------------------------------------------------------ */
@@ -572,3 +691,5 @@ export type LeaveRequest = typeof webLeaveRequests.$inferSelect;
 export type ApprovalRouteStep = typeof webApprovalRouteSteps.$inferSelect;
 export type ApprovalStep = typeof webApprovalSteps.$inferSelect;
 export type LeaveAdjustment = typeof webLeaveAdjustments.$inferSelect;
+export type PortalApprovalDelegation =
+  typeof webPortalApprovalDelegations.$inferSelect;
