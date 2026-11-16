@@ -500,9 +500,28 @@ export type ApprovalItem = RequestView & {
   applicantHireDate: string;
 };
 
-/** 결재함 질의가 쓰는 「나」. employee 가 붙은 Viewer 에서만 만든다 */
-function deciderOf(employee: EmployeeWithRank, isApprover: boolean): Decider {
-  return { employeeId: employee.id, rankId: employee.rankId, isApprover };
+/**
+ * 결재함 질의가 쓰는 「나」. employee 가 붙은 Viewer 에서만 만든다.
+ *
+ * @param acting 포털에 맡긴 결재권 위임으로 **지금 내가 대신할 수 있는** 사람들
+ *               (설계 B-9). 🔴 **부르는 쪽이 정한다** — 조회가 제 손으로 포털에
+ *               물으면 모든 화면·통로가 포털 왕복을 하나씩 달고 다니게 되고,
+ *               그중에는 **포털이 우리를 부르는 통로**도 있다
+ *               (app/api/integration/approvals — 거기서 또 포털에 물으면 포털이
+ *               이쪽을 기다리는 동안 이쪽이 포털을 기다린다).
+ *               기본값은 **「안 물었다」**이고 그때는 예전과 똑같이 돈다.
+ */
+function deciderOf(
+  employee: EmployeeWithRank,
+  isApprover: boolean,
+  acting: readonly string[] = [],
+): Decider {
+  return {
+    employeeId: employee.id,
+    rankId: employee.rankId,
+    isApprover,
+    actingForEmployeeIds: acting,
+  };
 }
 
 /**
@@ -519,9 +538,14 @@ function deciderOf(employee: EmployeeWithRank, isApprover: boolean): Decider {
  *  · 단계가 `PENDING` — 🔴 `WAITING` 은 아직 내 차례가 아니다(한 명씩 차례로
  *    가므로 앞사람이 처리해야 깨어난다). `APPROVED`·`REJECTED`·`SKIPPED` 는
  *    이미 끝난 단계다.
- *  · 그 단계가 내 것이다 (approval-scope.ts).
+ *  · 그 단계가 내 것이다 (approval-scope.ts). 🔵 결재권 위임을 받았으면 맡긴
+ *    사람의 단계도 「내 것」이다 — 넓히는 자리는 그 파일 한 곳이다.
  *  · 신청 자체도 아직 결재 중이다.
- *  · 🔴 내 신청은 뺀다 — 자기 휴가를 자기가 결재하지 않는다.
+ *  · 🔴 내 신청은 뺀다 — 자기 휴가를 자기가 결재하지 않는다. **위임으로도 못
+ *    넘는다**: 여기서 보는 것은 `me.employeeId`, 곧 **실제로 누르는 사람**이지
+ *    결재권을 맡긴 사람이 아니다. 남의 결재권을 빌렸다고 제 휴가가 제 결재함에
+ *    서면 결재가 통째로 무의미해진다(workflow.ts 의 decideStep 이 같은 울타리를
+ *    한 번 더 친다).
  */
 export function myPendingApprovalWhere(me: Decider): SQL {
   return and(
@@ -546,8 +570,16 @@ export function myPendingApprovalWhere(me: Decider): SQL {
  * 결재권이 없어도 자기 단계를 결재해야 하기 때문이다. 대신 질의가 **내
  * 단계만** 돌려주므로 남의 것이 보일 길은 없다 (옛 직급 단계는 조건 안에서
  * 여전히 `isApprover` 를 함께 본다).
+ *
+ * @param acting 포털에 맡긴 결재권 위임으로 지금 내가 **대신할 수 있는**
+ *               사람들. 결재함 화면이 물어 넘긴다(위 `deciderOf` 주석 —
+ *               조회가 스스로 묻지 않는 까닭이 거기 있다). 🔴 넘기지 않으면
+ *               대신 눌러야 할 결재가 **목록에 뜨지 않는다.**
  */
-export async function pendingForApprover(viewer: Viewer): Promise<ApprovalItem[]> {
+export async function pendingForApprover(
+  viewer: Viewer,
+  acting: readonly string[] = [],
+): Promise<ApprovalItem[]> {
   if (!viewer.employee) return [];
   const rows = await db
     .select({
@@ -561,7 +593,7 @@ export async function pendingForApprover(viewer: Viewer): Promise<ApprovalItem[]
     .innerJoin(webLeaveRequests, eq(webLeaveRequests.id, webApprovalSteps.requestId))
     .innerJoin(webEmployees, eq(webEmployees.id, webLeaveRequests.employeeId))
     .innerJoin(webRanks, eq(webRanks.id, webEmployees.rankId))
-    .where(myPendingApprovalWhere(deciderOf(viewer.employee, viewer.isApprover)))
+    .where(myPendingApprovalWhere(deciderOf(viewer.employee, viewer.isApprover, acting)))
     .orderBy(asc(webLeaveRequests.startDate));
 
   const views = await attach(rows.map((r) => r.req));

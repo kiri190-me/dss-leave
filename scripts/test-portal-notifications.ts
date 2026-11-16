@@ -409,7 +409,12 @@ async function main() {
       rankId: "rank-1",
       isApprover: true,
     });
-    assert.match(sql, /"web_approval_steps"\."approver_employee_id" = \$\d+/);
+    // 🔵 사람 갈래가 `=` 가 아니라 `in` 인 것은 결재권 위임 때문이다
+    //    (2026-11-16, 설계 B-9 — approval-scope.ts 의 approvableEmployeeIds).
+    // 🔴 **이 통로는 위임을 묻지 않는다** — 포털이 **우리를** 부르는 길이라
+    //    거기서 또 포털에 물으면 서로를 기다린다. 그래서 묶이는 것은 언제나
+    //    **내 번호 하나**뿐이고, 이 정규식이 그 「하나」를 세고 있다.
+    assert.match(sql, /"web_approval_steps"\."approver_employee_id" in \(\$\d+\)/);
     assert.ok(params.includes("emp-1"), "내 직원 id 를 묶지 않는다");
     // 옛 단계(사람 칸이 빈 행)는 예전처럼 직급으로 — 없으면 전환 순간 대기
     // 중이던 신청이 알림에서도 사라진다.

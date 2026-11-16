@@ -925,3 +925,118 @@ export async function notifyPortalApprovalCreated(
 
   return true;
 }
+
+/* ------------------------------------------------------------------ */
+/* 「이 사람이 지금 누구를 대신할 수 있나」 — 결재권 위임 (2026-11-16)     */
+/*                                                                     */
+/* 결재권 위임을 포털 한 곳에 모으기로 한 결정(설계 B-1·B-9)의 읽는      */
+/* 쪽이다. 지정·되돌리기는 통합 승인함이 하고 저장은 포털이 하며, 여기서 */
+/* 하는 일은 **묻기**뿐이다. 통로 규격(설계 C-2):                       */
+/*                                                                     */
+/*   POST {포털}/api/integration/delegations                           */
+/*   Authorization: Basic base64(client_id:client_secret)              */
+/*   본문: sub=<포털 users.id>&action=acting                            */
+/*   답(200): { "subs": ["…"], "count": N }                            */
+/*                                                                     */
+/* 🔴 `subs[0]` 은 언제나 부른 사람 자신이고, 뒤에 「대신할 수 있는      */
+/*    결재권자들」의 포털 번호가 붙는다. 🔴 **이어 붙이지 않는다** —     */
+/*    A→B, B→C 라도 C 는 A 를 못 얻고 그 판정은 **포털이 이미** 한다.    */
+/*                                                                     */
+/* 🔴 자격증명·상한·no-store·로그 규약은 이 파일의 다른 네 통로와       */
+/*    **글자 그대로 같다.** 같은 포털의 같은 인증이라 두 벌로 갈리면     */
+/*    한쪽만 조용히 거절당한다.                                         */
+/*                                                                     */
+/* 🔴 상한이 **2초**인 것은 설계서의 3초와 다르다. 그 3초는 **통합      */
+/*    승인함이 각 결재함을 부를 때**의 값이고(설계 B-6), 이 집에서 포털을 */
+/*    부르는 네 자리는 이미 NOTIFICATIONS_TIMEOUT_MS = 2초로 맞춰져     */
+/*    있다. 같은 집에서 같은 포털을 부르는 상한이 둘이면 느릴 때 어느    */
+/*    쪽이 느린지 알 수 없게 된다. 게다가 여기는 **사람이 [승인] 을      */
+/*    누르고 기다리는 결재 길목**이라 짧은 쪽이 안전하다 — 넘쳐도 위임만 */
+/*    안 걸릴 뿐 결재는 그대로 진행된다(설계 B-6). 🔴 이 문단을 지우지   */
+/*    마라: 설계서만 읽은 사람이 「3초인데 왜 2초냐」로 되돌리는 것을     */
+/*    막는 자리다. 🔵 A/S·재고관리도 같은 까닭으로 각자의 관례를 따랐다. */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 포털이 돌려준 몸통에서 `subs` 만 꺼낸다. 🔴 **모르는 모양은 빈 목록이 아니라
+ * 「못 읽었다」(null)** 다 — 포털이 통로를 고치다 칸 이름이 바뀐 날 「위임이
+ * 하나도 없다」로 조용히 읽히면, 대리인이 막히고도 아무 안내가 뜨지 않는다.
+ */
+function readDelegationSubjects(payload: unknown): string[] | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const subs = (payload as { subs?: unknown }).subs;
+  if (!Array.isArray(subs)) return null;
+  return subs.filter((one): one is string => typeof one === "string" && one !== "");
+}
+
+/**
+ * 포털에 묻는다 — **포털 번호 그대로** 돌려준다(명단 번호로 바꾸는 두 단은
+ * auth/portal-delegations.ts 가 한다).
+ *
+ * 🔴 **어떤 일이 있어도 던지지 않는다** — 포털이 죽었든(503), 우리를 거절했든
+ * (401·403·429), 주소가 틀렸든, 설정이 빠졌든, 이상한 JSON 을 보냈든 **「못
+ * 물었다」가 값으로 나간다.** 새면 포털 한 곳이 멈춘 날 결재 화면이 통째로
+ * 500 이 된다.
+ *
+ * @param subject 포털의 users.id (= ID 토큰의 sub, `web_users.auth_sub`).
+ * @returns 물었으면 `{ asked: true, subs }`, 못 물었으면 `{ asked: false }`.
+ *          🔴 빈 `subs` 와 `asked: false` 는 **다른 답**이다(설계 B-6·B-7).
+ */
+export async function fetchPortalActingSubjects(
+  subject: string,
+): Promise<{ asked: true; subs: string[] } | { asked: false }> {
+  // 🔵 번호가 없는 사람은 「못 물었다」가 아니라 **「물을 것이 없다」**다. 빈
+  //    목록을 물어본 것처럼 돌려준다 — 안내를 띄우면 영영 오지 않을 때를
+  //    기다리게 한다(leave/approval-delegation.ts 머리말).
+  if (!subject) return { asked: true, subs: [] };
+
+  let response: Response;
+  try {
+    // 🔴 env 의 getter 는 값이 없으면 **던진다** — 그래서 try **안**에서 읽는다
+    //    (이 파일의 다른 네 통로와 같은 모양).
+    const credentials = `${encodeURIComponent(env.ssoClientId)}:${encodeURIComponent(
+      env.ssoClientSecret,
+    )}`;
+
+    response = await fetch(`${env.ssoIssuer}/api/integration/delegations`, {
+      method: "POST",
+      headers: {
+        authorization: `Basic ${Buffer.from(credentials, "utf8").toString("base64")}`,
+        "content-type": "application/x-www-form-urlencoded",
+        accept: "application/json",
+      },
+      // 🔴 `action=acting` — 「이 사람이 **대신할 수 있는** 사람들」을 묻는
+      //    방향이다. 반대 방향(「나를 누가 대신하나」)은 같은 통로의 다른
+      //    action 이고, 그것을 여기 꽂으면 오류 없이 아무도 못 누른다.
+      body: new URLSearchParams({ sub: subject, action: "acting" }).toString(),
+      cache: "no-store",
+      signal: AbortSignal.timeout(NOTIFICATIONS_TIMEOUT_MS),
+    });
+  } catch (error) {
+    // 🔴 남기는 것은 오류의 **종류**뿐이다(TimeoutError·TypeError …).
+    //    주소도 자격증명도 포털 번호도 남기지 않는다.
+    console.error(
+      "[sso] 결재권 위임을 물어보지 못했습니다:",
+      error instanceof Error ? error.name : "unknown",
+    );
+    return { asked: false };
+  }
+
+  if (!response.ok) {
+    // 거절 본문은 포털의 내부 설정을 설명할 수 있다. 상태만 남긴다.
+    console.error("[sso] 결재권 위임 통로 거절:", response.status);
+    return { asked: false };
+  }
+
+  let subs: string[] | null;
+  try {
+    subs = readDelegationSubjects(await response.json());
+  } catch {
+    subs = null;
+  }
+  if (subs === null) {
+    console.error("[sso] 결재권 위임 응답을 읽지 못했습니다.");
+    return { asked: false };
+  }
+  return { asked: true, subs };
+}

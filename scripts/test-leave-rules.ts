@@ -654,15 +654,20 @@ check("🔴 전환: 사람 칸이 빈 옛 단계는 예전처럼 직급으로 �
 check("🔴 전환: 결재함 질의의 SQL 에도 옛 단계(사람 칸이 빈 것) 갈래가 있다", () => {
   // 값으로 답하는 isMyStep 과 결재함을 거르는 SQL 이 어긋나면, 목록에는
   // 보이는데 누르면 막히거나 그 반대가 된다. SQL 을 직접 들여다본다.
+  // 🔵 사람 갈래가 `=` 가 아니라 `in` 인 것은 결재권 위임 때문이다
+  //    (2026-11-16, 설계 B-9). 위임이 없으면 목록은 본인 하나뿐이라
+  //    `in ($1)` 은 예전의 `= $1` 과 같은 말이다 — 고른 행은 바뀌지 않는다.
+  //    위임이 실렸을 때 값과 SQL 이 같은 말을 하는지는
+  //    scripts/test-approval-delegation.ts 가 맞대어 본다.
   const { sql: text, params } = new PgDialect().sqlToQuery(myStepCondition(나));
-  assert.match(text, /"approver_employee_id" = \$1/);
+  assert.match(text, /"approver_employee_id" in \(\$1\)/);
   assert.match(text, /"approver_employee_id" is null and .*"rank_id" = \$2/);
   assert.deepEqual(params, ["e-박과장", "r-과장"]);
 });
 
 check("결재함 질의: 직급에 결재권이 없으면 내 이름이 박힌 단계만 본다", () => {
   const { sql: text, params } = new PgDialect().sqlToQuery(myStepCondition(결재권없는나));
-  assert.match(text, /"approver_employee_id" = \$1/);
+  assert.match(text, /"approver_employee_id" in \(\$1\)/);
   assert.equal(/rank_id/.test(text), false);
   assert.deepEqual(params, ["e-김대리"]);
 });

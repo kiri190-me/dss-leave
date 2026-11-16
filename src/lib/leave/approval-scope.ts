@@ -23,8 +23,15 @@
  * 위의 「이 단계가 내 것인가」와, 아래의 「결재함 문을 열 수 있는가」
  * (`canOpenApprovalBox`)다. 🔴 **섞이면 안 되므로** 한 파일에 나란히 둔다 —
  * 무엇이 왜 다른지는 아래 함수 머리말에 적었다.
+ *
+ * ── 🔴 결재권 위임이 들어왔다 (2026-11-16) ──────────────────────────
+ * 「내 것인가」가 **한 명**에서 **목록**으로 넓어졌다. 포털에 맡긴 결재권
+ * 위임을 받은 사람은 맡긴 사람의 단계도 누를 수 있다(설계 B-9,
+ * leave/approval-delegation.ts). 🔴 **넓히는 자리는 아래
+ * `approvableEmployeeIds` 한 곳**이고 값 판정과 SQL 이 그 **한 함수**를
+ * 함께 부른다 — 둘이 같은 말을 한다는 것을 글자로 못 박으려는 것이다.
  */
-import { and, eq, isNull, or, type SQL } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, type SQL } from "drizzle-orm";
 
 import { webApprovalSteps } from "@/lib/db/schema";
 
@@ -42,11 +49,50 @@ export type Decider = {
   rankId: string;
   /** 직급에 결재권이 있는가 (guards.ts 의 isApprover 그대로) */
   isApprover: boolean;
+  /**
+   * 🔴 **지금 내가 대신 결재할 수 있는 사람들**의 명단 번호
+   * (`web_employees.id`). 포털에 맡긴 결재권 위임을 읽은 결과다
+   * (leave/approval-delegation.ts).
+   *
+   * 🔴 **없는 것(undefined)은 「위임이 없다」가 아니라 「안 물었다」**이고, 둘은
+   * 여기서 같은 결과가 된다 — 못 물었을 때 위임 없이 진행하기로 한 결정
+   * (설계 B-6) 그대로다. 안 물은 까닭과 물은 자리는 그 파일의
+   * `NO_PORTAL_DELEGATIONS` 주석에 모아 두었다.
+   *
+   * 🔴 **본인은 여기 넣지 않아도 된다** — 아래 `approvableEmployeeIds` 가 늘
+   * 맨 앞에 둔다. 섞여 들어와도 중복은 걷힌다.
+   */
+  actingForEmployeeIds?: readonly string[];
 };
 
-/** 이 단계는 내 것인가 (값으로) */
+/**
+ * 🔴 **이 사람이 결재할 수 있는 「주인」 번호들** — 값 판정과 SQL 이 **둘 다**
+ * 이 함수를 부른다. 두 곳에 같은 문장을 두 번 적지 않으려는 자리다.
+ *
+ *  · **본인이 언제나 맨 앞**이다. 위임을 못 물었든 포털이 죽었든 본인 단계는
+ *    그대로 눌린다(설계 B-6 의 근거).
+ *  · **중복을 걷는다** — 포털은 답의 맨 앞에 부른 사람 자신을 넣어 준다.
+ *  · 🔴 **이어 붙이지 않는다.** A→B, B→C 라도 C 는 A 를 못 얻는다 — 그 판정은
+ *    포털이 이미 했고, 여기 들어오는 목록이 그 답 그대로다.
+ */
+export function approvableEmployeeIds(me: Decider): string[] {
+  return Array.from(new Set([me.employeeId, ...(me.actingForEmployeeIds ?? [])]));
+}
+
+/**
+ * 이 단계는 내 것인가 (값으로).
+ *
+ * 🔴 위임은 **사람으로 박힌 단계만** 넓힌다. 사람 칸이 빈 옛 단계는 예전대로
+ * 내 **직급**으로만 판정한다 — 포털이 주는 것은 사람뿐이라 맡긴 사람의 직급을
+ * 알 수 없고, 직급까지 빌려 오면 「그 직급에 걸린 **남의** 옛 단계」가 통째로
+ * 열린다(2026-09-22 에 `isApprover` 의 뜻을 넓히지 않기로 한 것과 같은 까닭,
+ * 아래 `canOpenApprovalBox` 머리말). 🔵 옛 단계는 2026-09-21 전환 전에 만들어진
+ * 행뿐이고 두 DB 모두 그때 0행이 됐다 — 넓혀서 얻을 것이 애초에 없다.
+ */
 export function isMyStep(step: StepOwner, me: Decider): boolean {
-  if (step.approverEmployeeId !== null) return step.approverEmployeeId === me.employeeId;
+  if (step.approverEmployeeId !== null) {
+    return approvableEmployeeIds(me).includes(step.approverEmployeeId);
+  }
   return me.isApprover && step.rankId === me.rankId;
 }
 
@@ -93,9 +139,15 @@ export function canOpenApprovalBox(me: ApprovalBoxViewer): boolean {
 /**
  * 이 단계는 내 것인가 (SQL 로). 결재함 목록·건수 질의가 함께 쓴다.
  * 🔴 위 `isMyStep` 과 **같은 문장**이어야 한다.
+ *
+ * 🔴 사람 갈래가 `=` 가 아니라 `in` 인 까닭은 결재권 위임이다 — 목록을 만드는
+ * 자리가 값 판정과 **같은 함수**(`approvableEmployeeIds`)라 둘이 어긋날 수
+ * 없다. 위임이 없으면 목록은 본인 하나뿐이고 `in ($1)` 은 `= $1` 과 같은 말이다.
+ * 🔴 **망 호출이 여기 들어오지 않는다** — 목록은 이미 값으로 들고 들어온다
+ * (설계 C-3: 거래를 열기 전에 묻는다).
  */
 export function myStepCondition(me: Decider): SQL {
-  const mine = eq(webApprovalSteps.approverEmployeeId, me.employeeId);
+  const mine = inArray(webApprovalSteps.approverEmployeeId, approvableEmployeeIds(me));
   const legacyByRank = and(
     isNull(webApprovalSteps.approverEmployeeId),
     eq(webApprovalSteps.rankId, me.rankId),
