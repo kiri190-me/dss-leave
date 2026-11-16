@@ -503,24 +503,22 @@ export type ApprovalItem = RequestView & {
 /**
  * 결재함 질의가 쓰는 「나」. employee 가 붙은 Viewer 에서만 만든다.
  *
- * @param acting 포털에 맡긴 결재권 위임으로 **지금 내가 대신할 수 있는** 사람들
- *               (설계 B-9). 🔴 **부르는 쪽이 정한다** — 조회가 제 손으로 포털에
- *               물으면 모든 화면·통로가 포털 왕복을 하나씩 달고 다니게 되고,
- *               그중에는 **포털이 우리를 부르는 통로**도 있다
- *               (app/api/integration/approvals — 거기서 또 포털에 물으면 포털이
- *               이쪽을 기다리는 동안 이쪽이 포털을 기다린다).
- *               기본값은 **「안 물었다」**이고 그때는 예전과 똑같이 돈다.
+ * 🔴 **결재권 위임 목록을 여기서 싣는다**(설계 B-9). 사람을 읽을 때 이미 딸려
+ * 온 값이라(auth/guards.ts 의 `loadEmployee`) 부르는 쪽이 따로 넘겨 줄 것이
+ * 없다 — 🔴 **넘겨받는 꼴이었다면 빠뜨린 자리에서 「대신 누를 결재가 목록에만
+ * 안 뜬다」가 된다.** 2026-11-16 저녁까지는 실제로 넘겨받는 꼴이었고(그때는
+ * 포털에 묻는 왕복이라 아무 데서나 부를 수 없었다), 제 표를 읽게 되면서
+ * **싣는 자리를 이 한 곳으로 모았다**(설계 B-12).
+ *
+ * 🟢 그래서 아래 넷이 **같은 목록**을 본다 — 결재함 목록 · 대기 건수 배지 ·
+ * 알림 종 · 포털에 내주는 통합 승인함.
  */
-function deciderOf(
-  employee: EmployeeWithRank,
-  isApprover: boolean,
-  acting: readonly string[] = [],
-): Decider {
+function deciderOf(employee: EmployeeWithRank, isApprover: boolean): Decider {
   return {
     employeeId: employee.id,
     rankId: employee.rankId,
     isApprover,
-    actingForEmployeeIds: acting,
+    actingForEmployeeIds: employee.actingForEmployeeIds,
   };
 }
 
@@ -571,15 +569,10 @@ export function myPendingApprovalWhere(me: Decider): SQL {
  * 단계만** 돌려주므로 남의 것이 보일 길은 없다 (옛 직급 단계는 조건 안에서
  * 여전히 `isApprover` 를 함께 본다).
  *
- * @param acting 포털에 맡긴 결재권 위임으로 지금 내가 **대신할 수 있는**
- *               사람들. 결재함 화면이 물어 넘긴다(위 `deciderOf` 주석 —
- *               조회가 스스로 묻지 않는 까닭이 거기 있다). 🔴 넘기지 않으면
- *               대신 눌러야 할 결재가 **목록에 뜨지 않는다.**
+ * 🔵 결재권 위임으로 **대신 눌러야 할 결재**도 여기 함께 뜬다 — 싣는 자리는 위
+ * `deciderOf` 한 곳이다.
  */
-export async function pendingForApprover(
-  viewer: Viewer,
-  acting: readonly string[] = [],
-): Promise<ApprovalItem[]> {
+export async function pendingForApprover(viewer: Viewer): Promise<ApprovalItem[]> {
   if (!viewer.employee) return [];
   const rows = await db
     .select({
@@ -593,7 +586,7 @@ export async function pendingForApprover(
     .innerJoin(webLeaveRequests, eq(webLeaveRequests.id, webApprovalSteps.requestId))
     .innerJoin(webEmployees, eq(webEmployees.id, webLeaveRequests.employeeId))
     .innerJoin(webRanks, eq(webRanks.id, webEmployees.rankId))
-    .where(myPendingApprovalWhere(deciderOf(viewer.employee, viewer.isApprover, acting)))
+    .where(myPendingApprovalWhere(deciderOf(viewer.employee, viewer.isApprover)))
     .orderBy(asc(webLeaveRequests.startDate));
 
   const views = await attach(rows.map((r) => r.req));

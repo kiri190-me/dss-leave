@@ -8,7 +8,8 @@
  * 역할
  * - 직원      : 명단에 연결된 계정
  * - 결재권자  : 직원 중 직급의 결재권이 켜진 사람 (과장·부장·대표)
- * - 결재함    : 위 결재권자 **또는** 결재선에 이름이 오른 사람 (canOpenApprovals)
+ * - 결재함    : 위 결재권자 **또는** 결재선에 이름이 오른 사람 **또는** 지금
+ *               유효한 결재권 위임을 받은 사람 (canOpenApprovals)
  * - 휴가 관리자: web_users.role = LEAVE_ADMIN
  */
 import { and, eq, sql } from "drizzle-orm";
@@ -26,6 +27,7 @@ import {
 } from "@/lib/db/schema";
 import { env } from "@/lib/env";
 import { canOpenApprovalBox } from "@/lib/leave/approval-scope";
+import { loadActingForEmployeeIds } from "./portal-delegations";
 import { RETURN_TO_FALLBACK, safeReturnTo } from "./return-to";
 import { getSessionUser } from "./session";
 
@@ -46,6 +48,22 @@ export type EmployeeWithRank = Employee & {
    * 결재선 구성원(active=true)과 같은 조건이다.
    */
   onApprovalRoute: boolean;
+  /**
+   * 🔴 **지금 이 사람이 대신 결재할 수 있는 사람들**의 명단 번호
+   * (`web_employees.id`). 통합 승인함에서 맡긴 결재권 위임을 포털이 이 집 표에
+   * 써 준 것을 읽은 값이다(설계 B-9·B-12, auth/portal-delegations.ts).
+   *
+   * 🔴 **여기 매단 까닭**: 이 값을 쓰는 곳이 넷인데(결재함 메뉴 · 대기 건수 배지 ·
+   * 알림 종 · 결재 실행) 사람을 읽는 길은 **이 함수 하나**다. 각자 읽게 두면
+   * 「메뉴는 있는데 배지가 0」처럼 **어긋나도 아무 오류가 안 나는** 모양이 된다.
+   * 🔵 포털이 우리를 부르는 통로(`api/integration/*`)도 같은 길로 사람을 읽으므로
+   * (auth/portal-actor.ts) 통합 승인함과 남의 종에도 저절로 따라간다.
+   *
+   * 🔴 **매 요청마다 다시 잰다.** 위임이 끝나면 다음 화면부터 빈 목록이 되고,
+   * 그래서 메뉴도 배지도 저절로 닫힌다 — 만료를 적어 두는 칸이 없다는 것이 그
+   * 보장이다(auth/portal-delegations.ts 의 `liveDelegationWhere`).
+   */
+  actingForEmployeeIds: readonly string[];
 };
 
 export type Viewer = {
@@ -62,8 +80,8 @@ export type Viewer = {
   isApprover: boolean;
   /**
    * 결재함을 열 수 있는가 — 직급에 결재권이 있거나 **결재선에 제 이름이
-   * 올라 있으면** 열린다 (leave/approval-scope.ts 의 `canOpenApprovalBox`,
-   * 까닭은 그 머리말에).
+   * 올라 있거나** 🔴 **지금 유효한 결재권 위임을 받았으면**(2026-11-16) 열린다
+   * (leave/approval-scope.ts 의 `canOpenApprovalBox`, 까닭은 그 머리말에).
    *
    * 🔴 「이 단계를 결재할 수 있는가」와 다른 말이다. 문이 열려도 결재함이
    * 보여 주는 것은 내 단계뿐이고, 실제 승인·반려는 `decideStep` 이 단계마다
@@ -89,34 +107,55 @@ export type Member = Viewer & { employee: EmployeeWithRank };
  */
 export { RETURN_TO_FALLBACK, RETURN_TO_MAX_LENGTH, safeReturnTo } from "./return-to";
 
+/**
+ * 명단의 한 사람 + 결재에 필요한 두 가지 곁값(결재선에 있나 · 지금 누구를
+ * 대신할 수 있나).
+ *
+ * 🔴 **질의 둘을 나란히 던진다**(`Promise.all`). 위임 목록은 결재선 여부처럼
+ * 하위 질의로 접어 넣을 수가 없다 — 필요한 것이 「있나 없나」가 아니라 **번호
+ * 목록**이고, 그것을 배열 하위 질의로 적으면 「살아 있는 위임」의 조건이 날
+ * SQL 로 이 파일에 한 벌 더 생긴다. 그 조건은 한 곳에만 있어야 한다
+ * (auth/portal-delegations.ts 의 `liveDelegationWhere`). 나란히 던지므로 **기다리는
+ * 시간은 한 왕복**이고, 느린 쪽이 전체 시간을 정한다.
+ */
 export async function loadEmployee(
   employeeId: string,
 ): Promise<EmployeeWithRank | null> {
-  const rows = await db
-    .select({
-      employee: webEmployees,
-      rank: webRanks,
-      // 결재선에 제 이름이 올라 있는가. 🔴 하위 질의로 **이 질의 안에서** 본다 —
-      // 왕복을 늘리지 않으려는 것이다 (EmployeeWithRank 머리말).
-      onApprovalRoute: sql<boolean>`exists (
+  const [rows, actingForEmployeeIds] = await Promise.all([
+    db
+      .select({
+        employee: webEmployees,
+        rank: webRanks,
+        // 결재선에 제 이름이 올라 있는가. 🔴 하위 질의로 **이 질의 안에서** 본다 —
+        // 왕복을 늘리지 않으려는 것이다 (EmployeeWithRank 머리말).
+        onApprovalRoute: sql<boolean>`exists (
         select 1 from ${webApprovalRouteSteps}
         where ${webApprovalRouteSteps.approverEmployeeId} = ${webEmployees.id}
           and ${webApprovalRouteSteps.isDeleted} = false
       )`,
-    })
-    .from(webEmployees)
-    .innerJoin(webRanks, eq(webRanks.id, webEmployees.rankId))
-    .where(
-      and(
-        eq(webEmployees.id, employeeId),
-        eq(webEmployees.isDeleted, false),
-        eq(webEmployees.isActive, true),
-      ),
-    )
-    .limit(1);
+      })
+      .from(webEmployees)
+      .innerJoin(webRanks, eq(webRanks.id, webEmployees.rankId))
+      .where(
+        and(
+          eq(webEmployees.id, employeeId),
+          eq(webEmployees.isDeleted, false),
+          eq(webEmployees.isActive, true),
+        ),
+      )
+      .limit(1),
+    // 🔴 **지금** 유효한 위임만 읽는다. 기준 시각을 여기서 찍으므로 요청마다
+    //    다시 재진다 — 기간이 끝나면 다음 화면부터 저절로 닫힌다.
+    loadActingForEmployeeIds(employeeId),
+  ]);
   const row = rows[0];
   return row
-    ? { ...row.employee, rank: row.rank, onApprovalRoute: row.onApprovalRoute }
+    ? {
+        ...row.employee,
+        rank: row.rank,
+        onApprovalRoute: row.onApprovalRoute,
+        actingForEmployeeIds,
+      }
     : null;
 }
 
@@ -134,6 +173,11 @@ export const getViewer = cache(async (): Promise<Viewer | null> => {
       ? canOpenApprovalBox({
           rankCanApprove: employee.rank.canApprove,
           onApprovalRoute: employee.onApprovalRoute,
+          // 🔴 **빠뜨리면 위임만 받은 사람에게 결재함 메뉴가 안 그려진다** —
+          //    오류 하나 없이 「결재함이 없는 사람」이 된다(2026-11-16 조각 5
+          //    에서 실제로 그랬다). 같은 값이 결재 판정에도 그대로 간다
+          //    (leave/data.ts 의 `deciderOf`) — 한 번 읽어 둘에 쓴다.
+          actingForEmployeeIds: employee.actingForEmployeeIds,
         })
       : false,
   };

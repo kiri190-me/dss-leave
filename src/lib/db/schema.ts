@@ -537,8 +537,9 @@ export const webApprovalSteps = pgTable(
  * ── ⓓ 2026-11-16 의 방식 전환(B-12) ───────────────────────────────────
  * 그 전에는 결재할 때마다 포털에 물었다(B-3). 뒤집은 까닭은 결재 길목에서 망
  * 호출을 없애려는 것이고, 그래서 **포털이 지정·철회할 때 전파하고 각 시스템은 제
- * 표만 읽는다.** 🔵 아직 **읽는 쪽은 안 바뀌었다** — 묻는 길을 걷어내고 이 표를
- * 보도록 잇는 것은 다음 조각의 일이다. 그때까지 이 표는 **받아 적기만** 한다.
+ * 표만 읽는다.** 🟢 **읽는 쪽도 같은 날 저녁에 이어졌다** — 묻던 길은 통째로
+ * 걷혔고, 이 표를 읽는 자리는 auth/portal-delegations.ts 의
+ * `loadActingForEmployeeIds` 하나다(살아 있는 줄의 조건도 거기 한 곳에만 있다).
  *
  * ── ⓔ 🟢 이 집에는 자체 위임이 없다 ───────────────────────────────────
  * A/S·재고관리에는 저희 손으로 만든 위임 표가 따로 있어 **두 출처가 한 화면에
@@ -608,7 +609,8 @@ export const webPortalApprovalDelegations = pgTable(
       sql`${t.delegateEmployeeId} <> ${t.delegatorEmployeeId}`,
     ),
     // 판정이 묻는 차례 그대로다 — 「내가(대리인) 지금 살아 있는 위임으로 누구를
-    // 대신할 수 있나」. 🔵 지금은 아무도 안 읽는다(읽는 쪽은 다음 조각).
+    // 대신할 수 있나」. 🔴 **모든 화면이 요청마다 이 색인을 탄다**(사람을 읽을
+    // 때 함께 읽는다 — auth/guards.ts 의 loadEmployee).
     index("web_portal_approval_delegations_delegate_idx").on(
       t.delegateEmployeeId,
       t.revokedAt,

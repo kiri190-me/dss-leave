@@ -411,9 +411,11 @@ async function main() {
     });
     // 🔵 사람 갈래가 `=` 가 아니라 `in` 인 것은 결재권 위임 때문이다
     //    (2026-11-16, 설계 B-9 — approval-scope.ts 의 approvableEmployeeIds).
-    // 🔴 **이 통로는 위임을 묻지 않는다** — 포털이 **우리를** 부르는 길이라
-    //    거기서 또 포털에 물으면 서로를 기다린다. 그래서 묶이는 것은 언제나
-    //    **내 번호 하나**뿐이고, 이 정규식이 그 「하나」를 세고 있다.
+    // 🔴 여기서 **하나**인 것은 이 검사가 위임 없는 사람을 세우고 있어서다
+    //    (위 Decider 에 actingForEmployeeIds 가 없다). 🔵 2026-11-16 저녁까지는
+    //    「이 통로는 위임을 묻지 않으므로 **언제나** 하나」였는데, 포털이 써 주는
+    //    방식으로 바뀌어 제 표에서 읽게 된 뒤로는 **이 통로에도 위임이 실린다**
+    //    (auth/portal-actor.ts) — 되물을 일이 없어져 서로 기다릴 까닭도 없다.
     assert.match(sql, /"web_approval_steps"\."approver_employee_id" in \(\$\d+\)/);
     assert.ok(params.includes("emp-1"), "내 직원 id 를 묶지 않는다");
     // 옛 단계(사람 칸이 빈 행)는 예전처럼 직급으로 — 없으면 전환 순간 대기
@@ -543,15 +545,45 @@ async function main() {
   });
 
   check("세션의 Viewer 를 그대로 옮긴다 — 화면과 같은 「나」다", () => {
+    // 🔴 **결재권 위임 목록도 그대로 따라간다**(2026-11-16). 사람을 읽는 길이
+    //    화면과 같아서(auth/portal-actor.ts → guards.ts 의 loadEmployee) 여기까지
+    //    딸려 오는데, 여기서 떨어뜨리면 **결재함에는 뜨는데 알림 종·통합
+    //    승인함에는 안 뜨는** 결재가 생긴다 — 어긋나도 아무 오류가 안 난다.
+    // 🔵 그 전에는 일부러 안 실었다. 위임을 알려면 포털에 물어야 했는데 이 길은
+    //    포털이 **우리를** 부르는 길이라 되물으면 서로 기다렸다(설계 D-8 ②).
+    //    포털이 써 주는 방식으로 바뀌어 제 표에서 읽게 되면서 공짜가 됐다.
     assert.deepEqual(
       portalActorOf({
         user: { role: "LEAVE_ADMIN" },
-        employee: { id: "emp-9", rankId: "rank-9" },
+        employee: { id: "emp-9", rankId: "rank-9", actingForEmployeeIds: ["emp-8"] },
         isApprover: true,
       }),
       {
         role: "LEAVE_ADMIN",
-        decider: { employeeId: "emp-9", rankId: "rank-9", isApprover: true },
+        decider: {
+          employeeId: "emp-9",
+          rankId: "rank-9",
+          isApprover: true,
+          actingForEmployeeIds: ["emp-8"],
+        },
+      },
+    );
+    // 위임이 없는 사람은 예전과 글자 하나 다르지 않게 돈다 — 빈 목록은
+    // `in ($1)` 이라 결국 본인 번호 하나다(approval-scope.ts).
+    assert.deepEqual(
+      portalActorOf({
+        user: { role: "LEAVE_ADMIN" },
+        employee: { id: "emp-9", rankId: "rank-9", actingForEmployeeIds: [] },
+        isApprover: true,
+      }),
+      {
+        role: "LEAVE_ADMIN",
+        decider: {
+          employeeId: "emp-9",
+          rankId: "rank-9",
+          isApprover: true,
+          actingForEmployeeIds: [],
+        },
       },
     );
     assert.deepEqual(

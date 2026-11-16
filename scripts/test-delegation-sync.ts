@@ -18,7 +18,8 @@
  *     → 이 통로가 포털 번호를 **두 단**으로 바꿔
  *        (auth_sub → web_users.employee_id → web_employees.id)
  *     → web_portal_approval_delegations 에 적는다
- *     → (다음 조각) 결재 판정이 **망이 아니라 그 표**를 읽는다
+ *     → 결재 판정이 **망이 아니라 그 표**를 읽는다 (2026-11-16 에 이어졌다 —
+ *        읽는 쪽 검사는 scripts/test-approval-delegation.ts 에 있다)
  *
  * ── 무엇을 지키는가 ─────────────────────────────────────────────────────
  *   1. 🔴 같은 `id` 로 두 번 와도 **한 줄**이다(멱등). 번호는 포털이 정한다.
@@ -55,11 +56,15 @@ process.env.DATABASE_URL = "postgres://nobody:nobody@127.0.0.1:1/none";
 import { SignJWT, exportJWK, generateKeyPair, type CryptoKey } from "jose";
 
 import { PORTAL_TOKEN_PURPOSES } from "../src/lib/auth/portal-service-token";
-import type { DelegatedApproverRow } from "../src/lib/leave/approval-delegation";
+// 🔵 `DelegatedApproverRow` 는 2026-11-16 저녁까지 leave/approval-delegation.ts
+//    에 있었다. 그 파일은 **포털에 묻던 쪽**이라 묻는 길을 걷어낼 때 통째로
+//    없어졌고(설계 B-12), 이 모양을 쓰는 것은 이제 받는 쪽뿐이라 여기로 옮겨
+//    왔다 — 가리키는 값도 쓰는 자리도 그대로다.
 import {
   applyDelegationCommand,
   parseDelegationCommand,
   readInstant,
+  type DelegatedApproverRow,
   type DelegationCommand,
   type DelegationSyncResult,
   type StoredPortalDelegation,
@@ -750,12 +755,20 @@ async function main() {
     }
   });
 
-  check("🔴 이 조각은 **읽는 쪽을 건드리지 않았다**", () => {
-    // 결재 판정을 이 표로 옮기는 것은 다음 조각이다. 지금 손대면 포털이 아직
-    // 한 줄도 써 주지 않는 상태에서 **모든 위임이 사라진다**.
+  check("🔴 판정 한 쌍은 이 표를 **모른다** — 값과 SQL 이 갈리는 길을 막는다", () => {
+    // 🔵 이 검사는 2026-11-16 에 뜻이 바뀌었다. 그날 저녁까지는 「읽는 쪽을 아직
+    //    안 건드렸다」(다음 조각의 일이다)는 뜻이었고, 지금은 **옮기고 난 뒤에도
+    //    지켜야 하는 금**이다.
+    // 🔴 `isMyStep`(값)과 `myStepCondition`(SQL)은 같은 문장이어야 하는데
+    //    (그 파일 머리말), 값 쪽은 순수 함수라 하위 질의를 돌릴 수가 없다. SQL
+    //    쪽만 표를 직접 보게 되는 순간 둘이 다른 말을 하고, 「결재함에는 보이는데
+    //    누르면 거절」이 되돌아온다. 그래서 목록은 **값으로 들고 들어온다.**
     const scope = withoutComments(read("src/lib/leave/approval-scope.ts"));
-    assert.ok(!scope.includes("webPortalApprovalDelegations"));
     assert.ok(scope.includes("approvableEmployeeIds"), "표본이 비었다 — 파일을 잘못 읽었다");
+    assert.ok(!scope.includes("webPortalApprovalDelegations"), "판정이 표를 직접 읽는다");
+    // 🔵 칸 이름(@/lib/db/schema)은 읽어도 된다 — SQL 조각을 만드는 데 필요하다.
+    //    못 쓰는 것은 **접속**(@/lib/db 의 db)이다.
+    assert.ok(!/from "@\/lib\/db"/.test(scope), "판정이 DB 접속을 끌어왔다");
   });
 
   /* ---------------------------------------------------------------- */

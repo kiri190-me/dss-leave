@@ -1,41 +1,51 @@
 /**
- * 결재권 위임(포털에 맡긴 것) 검사.  npm run test:delegation
+ * 결재권 위임 — **읽는 쪽** 검사.  npm run test:delegation
  *
- * 🔴 DB 에 닿지 않고 **사내망에도 나가지 않는다.** 포털 노릇은 이 검사가
- * 127.0.0.1 에 직접 띄운 가짜 서버가 한다(test-approval-nudge.ts 와 같은
- * 방식) — 그래서 「포털이 거절한다」·「영영 답하지 않는다」·「이상한 모양을
- * 준다」를 말로가 아니라 **실제로** 돌려 본다.
+ * 🔴 DB 에 닿지 않고 사내망에도 나가지 않는다. 질의는 **만들기만** 하고
+ * `.toSQL()` 로 구워 본다(drizzle 의 질의는 `await` 할 때 비로소 돈다 —
+ * scripts/test-delegation-sync.ts 가 쓰는 그 수법 그대로다).
  *
- * ── 위임이 흐르는 길 ────────────────────────────────────────────────────
+ * ── 위임이 흐르는 길 (2026-11-16 저녁에 뒤집힌 뒤) ───────────────────────
  *   통합 승인함에서 사람이 「누구의 결재권을 누구에게」를 지정한다 (포털에 저장)
- *     → 결재함 화면 · 결재 서버 액션이 **거래를 열기 전에** 포털에 묻고
- *     → 받은 포털 번호를 **두 단**으로 바꾼다
+ *     → 포털이 **세 시스템에 써 준다**  POST /api/integration/delegations
+ *     → 받는 통로가 포털 번호를 **두 단**으로 바꿔 적는다
  *        (auth_sub → web_users.employee_id → web_employees.id)
- *     → 그 목록이 「이 단계가 내 것인가」 한 쌍에 실린다
- *        (approval-scope.ts 의 isMyStep + myStepCondition)
+ *     → 🔴 **여기부터가 이 검사다.** 사람을 읽을 때 그 표에서 「지금 내가 대신할
+ *        수 있는 사람들」을 함께 읽고(auth/guards.ts 의 loadEmployee →
+ *        auth/portal-delegations.ts), 그 목록이 「이 단계가 내 것인가」 한 쌍에
+ *        실린다(approval-scope.ts 의 isMyStep + myStepCondition).
+ *
+ * 🔵 **이 파일은 2026-11-16 저녁에 뜻이 통째로 바뀌었다.** 그 전에는 결재할
+ * 때마다 포털에 **묻는** 쪽을 쟀고(가짜 포털 서버를 127.0.0.1 에 띄워 「거절
+ * 한다」·「영영 답하지 않는다」까지 돌려 봤다), 그 묻는 코드가 설계 B-12 로
+ * 통째로 없어졌다. 🔴 **파일을 지우지 않고 다시 썼다** — 1·2·6 절이 재는
+ * 「값 판정과 SQL 이 같은 말을 한다」·「자기 신청은 자기가 결재 못 한다」는
+ * 자료 출처와 **무관하게 살아남는 울타리**이고, 그 울타리가 이 집에서 가장
+ * 비싼 결함 둘을 막고 있기 때문이다.
  *
  * ── 무엇을 지키는가 ─────────────────────────────────────────────────────
  *   1. 🔴 값 판정과 SQL 조건이 **같은 말**을 한다 (한쪽만 넓어지면 「목록엔
  *      뜨는데 누르면 거절」 또는 그 반대가 된다).
  *   2. 🔴 본인이 맨 앞 · 중복 제거 · **이어 붙지 않는다**(A→B, B→C 라도 C 는
  *      A 를 못 얻는다).
- *   3. 🔴 **자기 신청은 자기가 결재 못 한다** — 위임으로도 못 넘는다.
- *   4. 🔴 빈 목록과 **「못 물었다」**를 가른다. 못 물으면 안내가 밖으로 나간다.
- *   5. 🔴 변환에 실패한 수를 **센다** (명단 미연결 · 계정 없음).
- *   6. 🔴 포털이 **우리를** 부르는 통로에서는 묻지 않는다.
- *   7. 🔴 망 호출은 **거래 밖**이다.
+ *   3. 🔴 **살아 있는 줄만** 읽는다 — 거둔 줄과 기간 밖은 안 본다. 기준 시각이
+ *      인자라 **요청마다 다시 재진다**(끝나면 저절로 닫힌다).
+ *   4. 🔴 **메뉴·배지·종이 같은 판정**을 쓴다 — 읽는 자리가 하나다.
+ *   5. 🔴 **자기 신청은 자기가 결재 못 한다** — 위임으로도 못 넘는다.
+ *   6. 🔴 묻던 길이 **빠짐없이** 걷혔고, 🔴 **받는 쪽이 쓰는 것은 남아 있다.**
  *
  * 🔴 왜 전부 main() 안에 있나: 이 저장소의 검사는 tsx 가 CJS 로 돌려
  * (package.json 에 type:module 이 없다) 최상위 await 을 쓸 수 없다.
+ * 🔴 **DB 를 건드리는 모듈은 `await import` 로 불러온다** — `src/lib/db` 는
+ * 모듈을 읽는 순간 DATABASE_URL 을 읽는데, 정적 import 는 아래 환경 설정보다
+ * **먼저** 돌기 때문이다(esbuild 가 import 를 위로 끌어올린다).
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { createServer, type ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
+import { readFileSync, readdirSync } from "node:fs";
 
-// 🔴 .env.local 을 읽지 않는다 — 이 검사는 여기 적힌 값으로만 돈다
-//    (test-approval-nudge.ts 와 같은 이유). SSO_ISSUER 는 아래에서 가짜 포털로
-//    덮어쓴다. DATABASE_URL 은 **아무 데도 붙지 않는 주소**다.
+// 🔴 .env.local 을 읽지 않는다 — 이 검사는 여기 적힌 값으로만 돈다.
+//    DATABASE_URL 은 **아무 데도 붙지 않는 주소**다. 질의를 만들기만 하므로
+//    끝까지 접속이 일어나지 않는다.
 process.env.SSO_ISSUER = "http://127.0.0.1:1";
 process.env.SSO_CLIENT_ID = "dss-leave";
 process.env.SSO_CLIENT_SECRET = "테스트용-시크릿";
@@ -45,15 +55,9 @@ process.env.DATABASE_URL = "postgres://nobody:nobody@127.0.0.1:1/none";
 
 import { PgDialect } from "drizzle-orm/pg-core";
 
-import { fetchPortalActingSubjects } from "../src/lib/auth/oidc";
-import {
-  NO_PORTAL_DELEGATIONS,
-  resolveActingDelegations,
-  type DelegatedApproverRow,
-  type PortalActingAnswer,
-} from "../src/lib/leave/approval-delegation";
 import {
   approvableEmployeeIds,
+  canOpenApprovalBox,
   isMyStep,
   myStepCondition,
   type Decider,
@@ -82,14 +86,32 @@ const withoutComments = (source: string) =>
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/^\s*\/\/.*$/gm, "");
 
-const FAKE_SECRET = "테스트용-시크릿";
+/**
+ * `src/` 아래 모든 소스를 **주석을 걷어** 읽는다. 걷어낸 이름이 어디에도 남지
+ * 않았음을 보이는 자리다 — 🔴 한 파일만 보고 「없다」고 하면 빠뜨린 자리가
+ * 그대로 돈다.
+ */
+function allSources(): { path: string; code: string }[] {
+  const out: { path: string; code: string }[] = [];
+  const walk = (rel: string) => {
+    for (const entry of readdirSync(new URL(`../${rel}`, import.meta.url), {
+      withFileTypes: true,
+    })) {
+      if (entry.isDirectory()) walk(`${rel}${entry.name}/`);
+      else if (/\.tsx?$/.test(entry.name)) {
+        const path = `${rel}${entry.name}`;
+        out.push({ path, code: withoutComments(read(path)) });
+      }
+    }
+  };
+  walk("src/");
+  return out;
+}
 
-/** 포털에 등록된 사람의 번호(포털 users.id)와 같은 모양. 🔴 전부 가짜다. */
-const SUB_나 = "11111111-2222-4333-8444-555555555555";
-const SUB_맡긴이 = "66666666-7777-4888-8999-aaaaaaaaaaaa";
-const SUB_제삼자 = "99999999-1111-4222-8333-444444444444";
+/* ------------------------------------------------------------------ */
+/* 가짜 값 — 🔴 실제 이름·사번을 한 자도 넣지 않는다                     */
+/* ------------------------------------------------------------------ */
 
-/** 🔴 실제 직원 이름·사번을 한 자도 넣지 않는다. */
 const 나 = "emp-나";
 const 맡긴이 = "emp-맡긴이";
 const 제삼자 = "emp-제삼자";
@@ -106,100 +128,14 @@ function sqlOf(me: Decider) {
   return new PgDialect().sqlToQuery(myStepCondition(me));
 }
 
-/* ------------------------------------------------------------------ */
-/* 가짜 포털 — 127.0.0.1 에만 뜬다                                      */
-/* ------------------------------------------------------------------ */
-
-type Heard = {
-  method?: string;
-  path?: string;
-  authorization?: string;
-  contentType?: string;
-  body: string;
-};
-
-let heard: Heard | null = null;
-/** 다음 요청에 무엇으로 답할지. 아무것도 하지 않으면 **영영 답하지 않는다.** */
-let answer: (res: ServerResponse) => void = (res) => res.end();
-
-const portal = createServer((req, res) => {
-  let body = "";
-  req.on("data", (chunk) => (body += String(chunk)));
-  req.on("end", () => {
-    heard = {
-      method: req.method,
-      path: req.url,
-      authorization: req.headers.authorization,
-      contentType: req.headers["content-type"],
-      body,
-    };
-    answer(res);
-  });
-});
-
-/** 이 답으로 한 번 물어본다. 찍힌 로그도 함께 돌려준다(자격증명 검사용). */
-async function ask(
-  reply: (res: ServerResponse) => void,
-  subject: string = SUB_나,
-): Promise<{ answer: PortalActingAnswer; logs: string }> {
-  heard = null;
-  answer = reply;
-  const lines: string[] = [];
-  const realError = console.error;
-  console.error = (...args: unknown[]) => {
-    lines.push(args.map((a) => String(a)).join(" "));
-  };
-  try {
-    return { answer: await fetchPortalActingSubjects(subject), logs: lines.join("\n") };
-  } finally {
-    console.error = realError;
-  }
-}
-
-const json = (code: number, payload: unknown) => (res: ServerResponse) => {
-  res.writeHead(code, { "content-type": "application/json" });
-  res.end(JSON.stringify(payload));
-};
-
-/** 판단 쪽 배선 — 포털 자리와 DB 자리에 가짜를 끼운다. */
-async function resolve(params: {
-  subject?: string;
-  answer?: PortalActingAnswer;
-  askThrows?: boolean;
-  rows?: readonly DelegatedApproverRow[];
-  lookupThrows?: boolean;
-}) {
-  const askedWith: string[] = [];
-  const lookedUp: string[][] = [];
-  const warnings: string[] = [];
-  const result = await resolveActingDelegations(params.subject ?? SUB_나, {
-    ask: async (subject) => {
-      askedWith.push(subject);
-      if (params.askThrows) throw new TypeError("fetch failed");
-      return params.answer ?? { asked: true, subs: [] };
-    },
-    lookup: async (subs) => {
-      lookedUp.push([...subs]);
-      if (params.lookupThrows) throw new Error("db down");
-      return params.rows ?? [];
-    },
-    warn: (message) => warnings.push(message),
-  });
-  return { result, askedWith, lookedUp, warnings };
-}
-
 async function main() {
-  await new Promise<void>((resolve) => portal.listen(0, "127.0.0.1", resolve));
-  const portalUrl = `http://127.0.0.1:${(portal.address() as AddressInfo).port}`;
-  process.env.SSO_ISSUER = portalUrl;
-
-  console.log("\n결재권 위임 (포털에 맡긴 것)\n");
+  console.log("\n결재권 위임 (포털이 써 준 것을 제 표에서 읽는다)\n");
 
   /* ---------------------------------------------------------------- */
   /* 1. 목록 만들기 — 본인이 맨 앞 · 중복 제거 · 이어 붙지 않는다        */
   /* ---------------------------------------------------------------- */
 
-  check("본인이 **언제나 맨 앞**이다 — 위임을 못 물어도 내 단계는 눌린다", () => {
+  check("본인이 **언제나 맨 앞**이다 — 위임이 하나도 없어도 내 단계는 눌린다", () => {
     assert.deepEqual(approvableEmployeeIds(decider()), [나]);
     assert.deepEqual(approvableEmployeeIds(decider({ actingForEmployeeIds: [] })), [나]);
     assert.deepEqual(approvableEmployeeIds(decider({ actingForEmployeeIds: [맡긴이] })), [
@@ -208,7 +144,7 @@ async function main() {
     ]);
   });
 
-  check("중복을 걷는다 — 포털은 답의 맨 앞에 부른 사람 자신을 넣어 준다", () => {
+  check("중복을 걷는다 — 겹치는 위임이 둘이거나 본인이 섞여 들어와도", () => {
     assert.deepEqual(
       approvableEmployeeIds(decider({ actingForEmployeeIds: [나, 맡긴이, 맡긴이] })),
       [나, 맡긴이],
@@ -216,8 +152,8 @@ async function main() {
   });
 
   check("🔴 이어 붙지 않는다 — A→B, B→C 라도 C 는 A 를 못 얻는다", () => {
-    // 포털이 「C 는 B 를 대신할 수 있다」만 답했다. B 가 A 를 대신할 수 있다는
-    // 사실은 여기 들어오지 않고, 이 쪽에서 만들어 내서도 안 된다.
+    // 읽는 질의가 `delegate_employee_id = 나` 한 줄만 보고 재귀하지 않는다.
+    // 여기서 한 번 더 이어 붙이면 아무도 지정하지 않은 결재권이 생긴다.
     const 대리인C = decider({ employeeId: 제삼자, actingForEmployeeIds: [맡긴이] });
     assert.deepEqual(approvableEmployeeIds(대리인C), [제삼자, 맡긴이]);
     assert.equal(isMyStep(step(나), 대리인C), false, "🔴 이어 붙어 남의 결재권이 생겼다");
@@ -260,9 +196,9 @@ async function main() {
   });
 
   check("🔴 위임은 **옛 직급 단계**를 넓히지 않는다 (값·SQL 둘 다)", () => {
-    // 사람 칸이 빈 옛 단계는 예전대로 **내 직급**으로만 판정한다. 포털이 주는
-    // 것은 사람뿐이라 맡긴 사람의 직급을 알 수 없고, 직급까지 빌려 오면 그
-    // 직급에 걸린 **남의** 옛 단계가 통째로 열린다.
+    // 사람 칸이 빈 옛 단계는 예전대로 **내 직급**으로만 판정한다. 위임이
+    // 가리키는 것은 사람뿐이라 맡긴 사람의 직급을 알 수 없고, 직급까지 빌려
+    // 오면 그 직급에 걸린 **남의** 옛 단계가 통째로 열린다.
     const 대리인 = decider({ rankId: "rank-대리", isApprover: false, actingForEmployeeIds: [맡긴이] });
     assert.equal(isMyStep(step(null, "rank-과장"), 대리인), false);
     assert.equal(isMyStep(step(null, "rank-대리"), 대리인), false, "직급 결재권이 없다");
@@ -271,286 +207,240 @@ async function main() {
     assert.deepEqual(params, [나, 맡긴이]);
   });
 
-  /* ---------------------------------------------------------------- */
-  /* 3. 빈 목록과 「못 물었다」를 가른다                                  */
-  /* ---------------------------------------------------------------- */
-
-  await checkAsync("물어봤더니 없더라 — **안내가 뜨지 않는다**", async () => {
-    const { result, askedWith, lookedUp } = await resolve({ answer: { asked: true, subs: [] } });
-    assert.deepEqual(askedWith, [SUB_나], "🔵 묻지도 않았다 — 아무것도 재지 못했다");
-    assert.deepEqual(lookedUp, [], "빈 답에 DB 를 두드렸다");
-    assert.deepEqual(result, NO_PORTAL_DELEGATIONS);
-    assert.equal(result.unavailable, false);
-  });
-
-  await checkAsync("🔴 못 물었다 — 목록은 비지만 **안내가 뜬다**", async () => {
-    const { result } = await resolve({ answer: { asked: false } });
-    assert.deepEqual(result.actingForEmployeeIds, []);
-    assert.equal(result.unavailable, true, "🔴 「없다」와 「모른다」가 뭉개졌다");
-  });
-
-  await checkAsync("포털 번호가 없는 사람(임시 로그인)은 **묻지 않는다**", async () => {
-    const { result, askedWith } = await resolve({ subject: "" });
-    assert.deepEqual(askedWith, [], "번호도 없는데 포털을 두드렸다");
-    // 🔴 장애가 아니다 — 안내를 띄우면 영영 오지 않을 때를 기다리게 한다.
-    assert.deepEqual(result, NO_PORTAL_DELEGATIONS);
-  });
-
-  await checkAsync("🔴 묻는 쪽이 던져도 삼킨다 — 결재 화면이 500 이 되면 안 된다", async () => {
-    const { result, warnings } = await resolve({ askThrows: true });
-    assert.equal(result.unavailable, true);
-    assert.equal(warnings.length, 1, "조용히 삼켰다");
-    assert.match(warnings[0], /TypeError/);
-  });
-
-  await checkAsync("🔴 DB 를 못 읽어도 던지지 않는다 — 「못 물었다」와 같은 답이다", async () => {
-    const { result, warnings } = await resolve({
-      answer: { asked: true, subs: [SUB_나, SUB_맡긴이] },
-      lookupThrows: true,
-    });
-    assert.deepEqual(result.actingForEmployeeIds, []);
-    assert.equal(result.unavailable, true);
-    assert.equal(warnings.length, 1);
+  check("🔴 판정 한 쌍은 **DB 를 모른다** — 그래야 값과 SQL 이 갈리지 않는다", () => {
+    // 위임이 같은 DB 의 표에 있으니 SQL 쪽만 `in (select …)` 로 바꿀 수도 있다.
+    // 그러면 값 쪽(isMyStep)은 순수 함수라 따라갈 수가 없어 둘이 다른 말을 한다.
+    const scope = withoutComments(read("src/lib/leave/approval-scope.ts"));
+    assert.ok(scope.includes("approvableEmployeeIds"), "표본이 비었다 — 파일을 잘못 읽었다");
+    // 🔵 칸 이름(@/lib/db/schema)은 읽어도 된다 — SQL 조각을 만드는 데 필요하다.
+    //    못 쓰는 것은 **접속**(@/lib/db 의 db)이다.
+    assert.ok(!/from "@\/lib\/db"/.test(scope), "판정이 DB 접속을 끌어왔다");
+    assert.ok(!scope.includes("webPortalApprovalDelegations"), "판정이 표를 직접 읽는다");
   });
 
   /* ---------------------------------------------------------------- */
-  /* 4. 두 단 변환 — 바꾸지 못한 수를 **센다**                           */
+  /* 3. 🔴 살아 있는 줄만 — 구워진 SQL 로 본다                           */
   /* ---------------------------------------------------------------- */
 
-  await checkAsync("포털 번호를 **명단 번호**로 바꾼다 (두 단)", async () => {
-    const { result, lookedUp, warnings } = await resolve({
-      answer: { asked: true, subs: [SUB_나, SUB_맡긴이] },
-      rows: [
-        { authSub: SUB_나, employeeId: 나 },
-        { authSub: SUB_맡긴이, employeeId: 맡긴이 },
-      ],
-    });
-    assert.deepEqual(lookedUp, [[SUB_나, SUB_맡긴이]], "🔵 받은 번호를 그대로 묻지 않았다");
-    // 🔴 본인 번호를 여기서 빼지 않는다 — 합치는 쪽이 맨 앞에 두고 중복을 걷는다.
-    assert.deepEqual(result.actingForEmployeeIds, [나, 맡긴이]);
-    assert.equal(result.unavailable, false);
-    assert.deepEqual(warnings, [], "🔴 멀쩡한데 경고를 남겼다 — 거짓 경보는 다음 경고를 죽인다");
+  const delegations = await import("../src/lib/auth/portal-delegations");
+  const 어느날 = new Date("2027-03-05T00:00:00.000Z");
+  // 🔵 「나」가 **대신 누르는 사람**이다 — 질의가 찾는 것은 그 사람에게 걸린
+  //    위임이고, 돌려주는 것은 **맡긴 사람들**이다.
+  const baked = delegations.actingForEmployeeIdsQuery(나, 어느날).toSQL();
+
+  check("🔴 **거둔 줄은 안 본다** — revoked_at 이 비어 있어야 살아 있다", () => {
+    assert.match(baked.sql, /"revoked_at" is null/);
+    assert.ok(!/"revoked_at" is not null/.test(baked.sql), "거꾸로 읽고 있다");
+  });
+
+  check("🔴 기간이 **반열린 구간**이다 — 끝나는 순간이 한 번 더 열리지 않게", () => {
+    // starts_at <= 지금 < ends_at. 끝을 `<=` 로 적으면 끝난 그 순간이 한 번 더
+    // 열리고, 그 한 번은 아무 오류도 내지 않는다.
+    assert.match(baked.sql, /"starts_at" <= \$\d+/);
+    assert.match(baked.sql, /"ends_at" > \$\d+/);
+    assert.ok(!/"ends_at" >= /.test(baked.sql), "🔴 끝나는 순간이 아직 열려 있다");
+    assert.ok(!/"starts_at" < \$/.test(baked.sql), "🔴 시작하는 순간이 안 열린다");
+  });
+
+  check("🔴 **대리인으로 찾아 맡긴 사람을 돌려준다** — 방향이 뒤집히면 아무도 못 누른다", () => {
+    assert.match(baked.sql, /"delegate_employee_id" = \$\d+/);
+    assert.match(baked.sql, /select distinct "delegator_employee_id"/);
+    assert.ok(baked.params.includes(나), "🔵 찾는 번호를 안 묶었다 — 아무것도 재지 못했다");
+    // 🔴 「나를 누가 대신하나」(거꾸로 방향)를 꽂으면 오류 없이 아무도 못 누른다.
+    assert.ok(
+      !/"delegator_employee_id" = \$/.test(baked.sql),
+      "🔴 거꾸로 방향으로 찾고 있다",
+    );
+  });
+
+  check("🔴 이어 붙을 길이 SQL 에 없다 — 표 하나만 본다", () => {
+    assert.equal((baked.sql.match(/from "/g) ?? []).length, 1, "하위 질의·조인이 생겼다");
+    assert.ok(!/recursive/i.test(baked.sql));
+    assert.ok(!/ join /i.test(baked.sql));
+  });
+
+  check("🔵 같은 번호를 두 번 싣지 않고 차례가 못 박혀 있다", () => {
+    // 한 사람에게 기간이 겹치는 위임이 둘 걸릴 수 있다. 합치는 쪽이 중복을 다시
+    // 걷지만, 여기서 줄여 두면 결재함 SQL 의 `in (…)` 이 깔끔하다.
+    assert.match(baked.sql, /select distinct /);
+    assert.match(baked.sql, /order by "web_portal_approval_delegations"\."delegator_employee_id"/);
+  });
+
+  check("🔴 기준 시각이 **박혀 있지 않다** — 요청마다 다시 재진다", () => {
+    // 이것이 「위임이 끝나면 메뉴도 닫힌다」의 밑바탕이다. 시각을 어딘가에 굽거나
+    // 캐 두면 「끝났는데 아직 열려 있는」 위임이 생기고, 그것은 아무 오류도 내지
+    // 않는다.
+    const 나중 = delegations
+      .actingForEmployeeIdsQuery(나, new Date("2028-03-05T00:00:00.000Z"))
+      .toSQL();
+    assert.equal(나중.sql, baked.sql, "문장이 시각에 따라 달라진다 — 상수를 굽고 있다");
+    assert.notDeepEqual(나중.params, baked.params, "🔴 시각이 묶이지 않는다");
+    // 기본값이 **지금**이다 — 부르는 쪽이 깜빡해도 과거에 멈추지 않는다.
+    const source = withoutComments(read("src/lib/auth/portal-delegations.ts"));
+    assert.match(source, /now: Date = new Date\(\)/);
+    // 🔴 조건을 만드는 자리에는 시각을 만들지 않는다(인자로만 받는다).
+    const where = source.slice(source.indexOf("export function liveDelegationWhere"));
+    assert.ok(
+      !where.slice(0, where.indexOf("\n}")).includes("new Date()"),
+      "🔴 조건이 제 손으로 지금을 찍는다",
+    );
+  });
+
+  check("🔴 살아 있는 줄의 조건은 **한 곳에만** 있다", () => {
+    const 적힌곳 = allSources().filter((f) => f.code.includes("webPortalApprovalDelegations"));
+    assert.ok(적힌곳.length > 0, "🔵 표를 쓰는 파일이 하나도 없다 — 잘못 읽었다");
+    // 읽는 조건(revoked_at is null + 기간)은 portal-delegations.ts 하나뿐이고,
+    // 나머지 둘은 **쓰는 쪽**(받는 통로의 upsert·revoke)과 스키마다.
+    const 조건을적은곳 = 적힌곳.filter((f) => f.code.includes("isNull(webPortalApprovalDelegations.revokedAt)"));
+    assert.deepEqual(
+      조건을적은곳.map((f) => f.path),
+      ["src/lib/auth/portal-delegations.ts"],
+    );
+  });
+
+  /* ---------------------------------------------------------------- */
+  /* 4. 🔴 메뉴 · 배지 · 종 — **같은 판정**을 쓴다                       */
+  /* ---------------------------------------------------------------- */
+
+  const guards = withoutComments(read("src/lib/auth/guards.ts"));
+  const data = withoutComments(read("src/lib/leave/data.ts"));
+  const actor = withoutComments(read("src/lib/auth/portal-actor.ts"));
+  const notif = withoutComments(read("src/lib/leave/portal-notifications.ts"));
+  const header = withoutComments(read("src/components/AppHeader.tsx"));
+
+  check("🔴 결재함 문이 위임에도 열린다 — 직급도 결재선도 없는 사람", () => {
+    // 조각 5 에서 드러난 결함 그 자체다: 위임만 받은 사람은 대신 누를 결재가
+    // 생겨도 머리말에 「결재함」 메뉴가 아예 안 그려져 주소를 쳐야 보였다.
+    const 위임만받은사람 = { rankCanApprove: false, onApprovalRoute: false };
+    assert.equal(canOpenApprovalBox(위임만받은사람), false, "🔵 표본이 비었다 — 원래 열려 있었다");
+    assert.equal(
+      canOpenApprovalBox({ ...위임만받은사람, actingForEmployeeIds: [맡긴이] }),
+      true,
+    );
+  });
+
+  check("🔴 **위임이 끝나면 문이 닫힌다** — 열어 둠을 적어 두는 칸이 없다", () => {
+    // 여는 조건과 닫는 조건이 같은 값 하나다. 기간이 지나면 위 질의가 빈 목록을
+    // 돌려주고(ends_at > 지금), 빈 목록이면 이 문은 닫힌다.
+    const 끝난뒤 = { rankCanApprove: false, onApprovalRoute: false, actingForEmployeeIds: [] };
+    assert.equal(canOpenApprovalBox(끝난뒤), false);
+    // 🔴 결재 권한도 함께 닫힌다 — 문만 닫히고 판정이 남으면 더 나쁘다.
+    assert.equal(isMyStep(step(맡긴이), decider({ actingForEmployeeIds: [] })), false);
+  });
+
+  check("🔴 직급·결재선으로 열리던 문은 **그대로** 열린다", () => {
+    assert.equal(canOpenApprovalBox({ rankCanApprove: true, onApprovalRoute: false }), true);
+    assert.equal(canOpenApprovalBox({ rankCanApprove: false, onApprovalRoute: true }), true);
   });
 
   await checkAsync(
-    "🔴 명단에 안 이어진 계정은 빠지고 **세어서 남는다** — 조용히 삼키지 않는다",
+    "🔴 위임만 받은 사람의 **결재함 조회**에 맡긴 사람 단계가 들고 제 신청은 빠진다",
     async () => {
-      const { result, warnings } = await resolve({
-        answer: { asked: true, subs: [SUB_나, SUB_맡긴이] },
-        rows: [
-          { authSub: SUB_나, employeeId: 나 },
-          // 포털 로그인은 됐는데 휴가 관리자가 아직 명단에 잇지 않았다.
-          { authSub: SUB_맡긴이, employeeId: null },
-        ],
+      // 문(canOpenApprovalBox)과 **목록**은 다른 판정이다. 문만 열리고 목록이
+      // 비면 들어가 봤자 빈 화면이라 결함이 그대로 남는다.
+      const { myPendingApprovalWhere } = await import("../src/lib/leave/data");
+      const 위임만받은사람 = decider({
+        rankId: "rank-대리",
+        isApprover: false,
+        actingForEmployeeIds: [맡긴이],
       });
-      assert.deepEqual(result.actingForEmployeeIds, [나]);
-      assert.equal(result.unavailable, false, "🔴 변환 실패는 포털 장애가 아니다");
-      assert.equal(warnings.length, 1, "🔴 세지 않으면 그 사람만 영영 조용히 막힌다");
-      assert.match(warnings[0], /명단 미연결 1/);
-      assert.match(warnings[0], /계정 없음 0/);
+      const { sql: text, params } = new PgDialect().sqlToQuery(
+        myPendingApprovalWhere(위임만받은사람),
+      );
+      // 맡긴 사람의 단계가 「내 것」으로 들어온다.
+      assert.match(text, /"approver_employee_id" in \(\$\d+, \$\d+\)/);
+      assert.equal(params.filter((p) => p === 맡긴이).length, 1, "맡긴 사람 단계가 안 든다");
+      // 🔴 **자기 신청을 빼는 울타리는 「누른 사람」으로 남아 있다.** 맡긴 사람의
+      //    번호로 빼면 **맡긴 사람의 휴가가 대리인에게 안 보이게 된다** —
+      //    대신 결재하라고 맡긴 바로 그 건이다.
+      const 뺀자리 = /"employee_id" <> \$(\d+)/.exec(text);
+      assert.ok(뺀자리, "자기 신청을 빼는 울타리가 사라졌다");
+      assert.equal(params[Number(뺀자리[1]) - 1], 나);
     },
   );
 
-  await checkAsync("🔴 이 시스템에 계정이 없는 번호도 세어진다", async () => {
-    const { result, warnings } = await resolve({
-      answer: { asked: true, subs: [SUB_나, SUB_맡긴이, SUB_제삼자] },
-      rows: [{ authSub: SUB_나, employeeId: 나 }],
-    });
-    assert.deepEqual(result.actingForEmployeeIds, [나]);
-    assert.match(warnings[0], /3건 가운데 2건/);
-    assert.match(warnings[0], /계정 없음 2/);
-    // 🔴 포털 번호 자체는 로그에 찍지 않는다 — 사람을 가리키는 값이다.
-    for (const sub of [SUB_나, SUB_맡긴이, SUB_제삼자]) {
-      assert.ok(!warnings[0].includes(sub), "🔴 로그에 포털 번호가 딸려 나온다");
-    }
+  check("🔴 문을 넓혔다고 **사유 열람**까지 넓어지지 않았다", () => {
+    // 달력에서 남의 휴가 사유를 보는 것은 **직급의 결재권**만 연다(canSeeReason).
+    // 위임으로 그것까지 열면 「며칠 대신 눌러 달라」가 **그 기간 전 직원의 휴가
+    // 사유를 읽는 권한**이 된다 — 아무도 그렇게 맡긴 적이 없다.
+    const at = guards.indexOf("export function canSeeReason");
+    assert.ok(at > 0, "사유 열람 판정을 찾지 못했다");
+    const body = guards.slice(at, guards.indexOf("\n}", at));
+    assert.ok(body.includes("viewer.isApprover"), "🔵 표본이 비었다 — 본문을 잘못 잘랐다");
+    assert.ok(!body.includes("acting"), "🔴 위임이 사유 열람까지 열었다");
+    assert.ok(!body.includes("canOpenApprovals"), "🔴 넓어진 문을 사유 열람이 따라갔다");
   });
 
-  /* ---------------------------------------------------------------- */
-  /* 5. 포털 통로 — 실제로 한 번 왕복해 본다                             */
-  /* ---------------------------------------------------------------- */
-
-  await checkAsync("보내는 모양 — POST · Basic 머리말 · action=acting", async () => {
-    const { answer: got } = await ask(json(200, { subs: [SUB_나, SUB_맡긴이], count: 2 }));
-    assert.deepEqual(got, { asked: true, subs: [SUB_나, SUB_맡긴이] });
-    assert.ok(heard, "🔵 포털이 아무 요청도 못 받았다 — 아무것도 재지 못했다");
-    const h = heard as Heard;
-    assert.equal(h.method, "POST");
-    assert.equal(h.path, "/api/integration/delegations");
-    assert.equal(h.contentType, "application/x-www-form-urlencoded");
-    assert.match(String(h.authorization), /^Basic /);
-    const sent = new URLSearchParams(h.body);
-    assert.equal(sent.get("sub"), SUB_나);
-    // 🔴 반대 방향(「나를 누가 대신하나」)을 꽂으면 오류 없이 아무도 못 누른다.
-    assert.equal(sent.get("action"), "acting");
-    // 자격증명은 **머리말로만** 간다 — 몸통에도 주소에도 실리지 않는다.
-    assert.ok(!h.body.includes(FAKE_SECRET));
-    assert.ok(!String(h.path).includes("client"));
-  });
-
-  await checkAsync("🔴 모르는 모양은 **빈 목록이 아니라 「못 물었다」**", async () => {
-    // 포털이 통로를 고치다 칸 이름이 바뀐 날. 「위임이 하나도 없다」로 읽히면
-    // 대리인이 막히고도 아무 안내가 뜨지 않는다.
-    for (const payload of [{ count: 0 }, { subs: "하나" }, { subs: null }, [SUB_나], "그냥 글자"]) {
-      const { answer: got } = await ask(json(200, payload));
-      assert.deepEqual(got, { asked: false }, `모르는 모양을 빈 목록으로 읽었다: ${JSON.stringify(payload)}`);
-    }
-    // JSON 이 아예 아니면 그것도 「못 물었다」다.
-    const { answer: got } = await ask((res) => {
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end("<html>포털이 아니다</html>");
-    });
-    assert.deepEqual(got, { asked: false });
-  });
-
-  await checkAsync("글자가 아닌 줄만 버린다 — 나머지는 살린다", async () => {
-    const { answer: got } = await ask(json(200, { subs: [SUB_나, 42, "", null, SUB_맡긴이] }));
-    assert.deepEqual(got, { asked: true, subs: [SUB_나, SUB_맡긴이] });
-  });
-
-  await checkAsync("🔴 포털이 거절해도 던지지 않는다 — 값으로 나간다", async () => {
-    for (const code of [401, 403, 429, 500, 503]) {
-      const { answer: got } = await ask(json(code, { error: "nope" }));
-      assert.deepEqual(got, { asked: false }, `${code} 를 삼키지 못했다`);
-    }
-  });
-
-  await checkAsync("🔴 포털이 **영영 답하지 않아도** 상한에서 끊고 돌아온다", async () => {
-    const started = Date.now();
-    // 아무 답도 하지 않는다. 상한(2초)이 없으면 이 검사가 영영 끝나지 않는다.
-    const { answer: got } = await ask(() => {});
-    const elapsed = Date.now() - started;
-    assert.deepEqual(got, { asked: false });
-    assert.ok(elapsed < 5000, `상한이 안 걸린다 (${elapsed}ms)`);
-  });
-
-  await checkAsync("🔴 자격증명도 포털 번호도 로그에 찍지 않는다", async () => {
-    const collected: string[] = [];
-    collected.push((await ask(json(401, { error: "nope" }))).logs);
-    process.env.SSO_ISSUER = "http://127.0.0.1:1";
-    collected.push((await ask(json(200, { subs: [] }))).logs);
-    process.env.SSO_ISSUER = portalUrl;
-
-    const all = collected.join("\n");
-    assert.ok(all.length > 0, "🔵 로그가 비어 있다 — 아무것도 재지 못했다");
-    assert.ok(!all.includes(FAKE_SECRET), "🔴 로그에 시크릿이 딸려 나온다");
-    assert.ok(!all.includes("Basic "), "🔴 로그에 Authorization 머리말이 딸려 나온다");
-    assert.ok(!all.includes(SUB_나), "🔴 로그에 포털 번호가 딸려 나온다");
-  });
-
-  /* ---------------------------------------------------------------- */
-  /* 6. 두 단 변환의 DB 쪽 — uuid 가 아닌 번호는 묻기 전에 버린다         */
-  /* ---------------------------------------------------------------- */
-
-  await checkAsync("🔴 uuid 모양이 아닌 번호는 **DB 에 묻기 전에** 버린다", async () => {
-    // auth_sub 는 uuid 열이라 모양이 아닌 값으로 조회하면 드라이버가 던진다.
-    // 🔵 이 호출은 DB 에 닿지 않는다 — 걸러 내고 나면 물을 것이 없어 바로 끝난다.
-    const { findEmployeeIdsBySubjects } = await import("../src/lib/auth/portal-delegations");
-    assert.deepEqual(await findEmployeeIdsBySubjects(["그냥-글자", ""]), []);
-  });
-
-  await checkAsync("포털이 설정되지 않은 기계에서는 묻지 않고 **안내도 안 띄운다**", async () => {
-    const { resolvePortalActingDelegations } = await import("../src/lib/auth/portal-delegations");
-    const saved = process.env.SSO_ISSUER;
-    delete process.env.SSO_ISSUER;
-    // 🔵 포털이 요청을 **정말 못 받았는지**를 보려고 기록을 비워 둔다.
-    heard = null;
-    answer = json(200, { subs: [SUB_나, SUB_맡긴이] });
-    try {
-      const got = await resolvePortalActingDelegations(SUB_나);
-      // 🔴 장애가 아니다. 세우면 그 PC 의 모든 결재 화면에 경고가 깔린다.
-      assert.deepEqual(got, NO_PORTAL_DELEGATIONS);
-      assert.equal(heard, null, "🔴 설정이 없는데 포털을 두드렸다");
-    } finally {
-      process.env.SSO_ISSUER = saved;
-    }
-  });
-
-  /* ---------------------------------------------------------------- */
-  /* 7. 🔴 배선 — 어디서 묻고, **어디서 안 묻는가**                      */
-  /* ---------------------------------------------------------------- */
-
-  const wiring = withoutComments(read("src/lib/auth/portal-delegations.ts"));
-  const workflow = withoutComments(read("src/lib/leave/workflow.ts"));
-  const action = withoutComments(read("src/app/actions/leave.ts"));
-  const screen = withoutComments(read("src/app/(internal)/approvals/page.tsx"));
-  const data = withoutComments(read("src/lib/leave/data.ts"));
-
-  check("배선이 묻는 쪽과 바꾸는 쪽을 **그대로** 꽂는다", () => {
-    assert.ok(wiring.includes("ask: fetchPortalActingSubjects"));
-    assert.ok(wiring.includes("lookup: findEmployeeIdsBySubjects"));
-    // 설정이 없는 기계에서는 아예 묻지 않는다 — 검사가 **먼저** 와야 한다.
-    assert.ok(
-      wiring.indexOf("if (!env.ssoConfigured) return NO_PORTAL_DELEGATIONS;") <
-        wiring.indexOf("resolveActingDelegations("),
-      "설정 검사가 뒤에 있다",
+  check("🔴 **읽는 자리가 하나다** — 사람을 읽을 때 함께 읽는다", () => {
+    assert.ok(guards.includes("loadActingForEmployeeIds(employeeId)"), "사람을 읽을 때 안 읽는다");
+    // 🔴 부르는 곳이 여럿이면 「메뉴는 있는데 배지가 0」처럼 어긋나도 아무 오류가
+    //    안 나는 모양이 된다. 정의한 파일 말고는 **guards.ts 한 곳**이어야 한다.
+    const 부르는곳 = allSources().filter(
+      (f) =>
+        f.path !== "src/lib/auth/portal-delegations.ts" &&
+        f.code.includes("loadActingForEmployeeIds"),
     );
+    assert.deepEqual(부르는곳.map((f) => f.path), ["src/lib/auth/guards.ts"]);
   });
 
-  check("🔴 결재함 화면이 묻고, 그 목록을 조회에 **넘긴다**", () => {
-    assert.ok(screen.includes("await resolvePortalActingDelegations(member.user.authSub)"));
-    assert.ok(
-      screen.includes("pendingForApprover(member, portal.actingForEmployeeIds)"),
-      "🔴 물어 놓고 안 넘기면 대신 누를 결재가 목록에 뜨지 않는다",
-    );
-    // 못 물었을 때의 안내를 그린다(설계 B-7).
-    assert.ok(screen.includes("portal.unavailable &&"));
-    assert.ok(screen.includes("PORTAL_DELEGATION_UNAVAILABLE_NOTICE"));
+  check("🔴 그 한 값이 **메뉴·배지·종 셋**으로 갈라져 나간다", () => {
+    // ① 메뉴 — 결재함 문(canOpenApprovals)이 그 값을 본다.
+    assert.ok(guards.includes("actingForEmployeeIds: employee.actingForEmployeeIds,"));
+    assert.ok(header.includes("viewer.canOpenApprovals &&"), "메뉴가 다른 값을 본다");
+    // ② 배지 — 건수 질의가 쓰는 「나」에 그 값이 실린다.
+    assert.ok(data.includes("actingForEmployeeIds: employee.actingForEmployeeIds,"));
+    assert.ok(data.includes("deciderOf(viewer.employee, viewer.isApprover)"));
+    // ③ 종 — 포털 쪽 사람도 같은 길로 읽혀 같은 값을 싣는다.
+    assert.ok(actor.includes("loadEmployee(user.employeeId)"));
+    assert.ok(notif.includes("actingForEmployeeIds: viewer.employee.actingForEmployeeIds,"));
   });
 
-  check("🔴 서버 액션이 **decideStep 보다 먼저** 묻는다 — 거래 밖이다", () => {
-    const at = action.indexOf("export async function decideAction");
-    assert.ok(at > 0, "decideAction 을 찾지 못했다");
-    const body = action.slice(at);
-    const asked = body.indexOf("await resolvePortalActingDelegations(");
-    const decided = body.indexOf("await decideStep(");
-    assert.ok(asked > 0, "🔴 서버 액션이 포털에 묻지 않는다 — 대리인이 누를 수 없다");
-    assert.ok(decided > asked, "🔴 거래를 연 뒤에 묻는다");
-    // 묻는 열쇠는 **검증된 세션**에서 온다 — 폼에서 온 값으로 사람을 고르지 않는다.
-    assert.ok(body.includes("resolvePortalActingDelegations(member.user.authSub)"));
-  });
-
-  check("🔴 workflow.ts 는 제 손으로 묻지 않는다 — 망 호출이 거래 안에 들어간다", () => {
-    for (const forbidden of ["resolvePortalActingDelegations", "fetchPortalActingSubjects", "fetch("]) {
-      assert.ok(!workflow.includes(forbidden), `🔴 거래 안에서 포털을 부른다: ${forbidden}`);
-    }
-    // 받은 값을 판정에 그대로 싣는다.
-    assert.ok(workflow.includes("actingForEmployeeIds: portal.actingForEmployeeIds,"));
-    assert.ok(workflow.includes("const mine = isMyStep(step, {"));
-  });
-
-  check("🔴 **포털이 우리를 부르는 통로에서는 묻지 않는다**", () => {
-    // 거기서 또 포털에 물으면 포털이 이쪽을 기다리는 동안 이쪽이 포털을
-    // 기다린다. 머리말의 건수·알림 종도 모든 화면에 딸려 오는 자리라 묻지 않는다.
-    for (const path of [
-      "src/app/api/integration/approvals/route.ts",
-      "src/lib/leave/portal-approvals.ts",
-      "src/lib/leave/portal-notifications.ts",
-      "src/components/PortalNotificationBell.tsx",
-      "src/app/(internal)/layout.tsx",
-    ]) {
-      const source = withoutComments(read(path));
-      for (const forbidden of [
-        "resolvePortalActingDelegations",
-        "fetchPortalActingSubjects",
-        "actingForEmployeeIds",
-      ]) {
-        assert.ok(!source.includes(forbidden), `🔴 ${path} 가 포털에 되묻는다: ${forbidden}`);
-      }
-    }
-  });
-
-  check("🔴 조회는 **스스로 묻지 않는다** — 부르는 쪽이 정한다", () => {
-    for (const forbidden of ["resolvePortalActingDelegations", "fetchPortalActingSubjects"]) {
-      assert.ok(!data.includes(forbidden), `🔴 조회가 제 손으로 포털을 부른다: ${forbidden}`);
-    }
-    // 넘겨받은 목록을 공용 조건에 그대로 싣는다.
-    assert.ok(data.includes("deciderOf(viewer.employee, viewer.isApprover, acting)"));
+  check("🔴 조회가 **스스로 읽지 않는다** — 싣는 자리는 deciderOf 한 곳", () => {
+    assert.ok(!data.includes("loadActingForEmployeeIds"), "조회가 제 손으로 읽는다");
+    // 🔴 넘겨받는 꼴이면 빠뜨린 자리에서 「대신 누를 결재가 목록에만 안 뜬다」가
+    //    된다. 그래서 건수·목록 둘 다 인자 없이 같은 함수를 부른다.
+    assert.equal((data.match(/deciderOf\(viewer\.employee, viewer\.isApprover\)/g) ?? []).length, 2);
     // 🔴 넷이 쓰는 그 **한 문장**은 그대로다.
     assert.ok(data.includes("myStepCondition(me)"));
   });
 
   /* ---------------------------------------------------------------- */
-  /* 8. 🔴 자기 신청은 자기가 결재 못 한다 — 위임으로도 못 넘는다         */
+  /* 5. 🔴 결재 실행 — 거래를 열기 **전에** 읽은 값을 들고 들어간다       */
+  /* ---------------------------------------------------------------- */
+
+  const workflow = withoutComments(read("src/lib/leave/workflow.ts"));
+  const action = withoutComments(read("src/app/actions/leave.ts"));
+  const screen = withoutComments(read("src/app/(internal)/approvals/page.tsx"));
+
+  check("🔴 서버 액션이 위임 목록을 decideStep 에 **넘긴다**", () => {
+    const at = action.indexOf("export async function decideAction");
+    assert.ok(at > 0, "decideAction 을 찾지 못했다");
+    const body = action.slice(at);
+    assert.ok(
+      body.includes("member.employee.actingForEmployeeIds,"),
+      "🔴 안 넘기면 목록엔 뜨는데 눌러도 거절된다",
+    );
+    // 열쇠는 **검증된 세션**에서 온 사람이다 — 폼에서 온 값으로 사람을 고르지 않는다.
+    assert.ok(body.includes("const member = await requireMember();"));
+    assert.ok(!/formData[^)]*acting/i.test(body), "🔴 폼에서 온 값으로 결재권을 정한다");
+  });
+
+  check("🔴 workflow.ts 는 **거래 안에서 읽지 않는다**", () => {
+    for (const forbidden of ["loadActingForEmployeeIds", "@/lib/auth/portal-delegations", "fetch("]) {
+      assert.ok(!workflow.includes(forbidden), `🔴 거래 안에서 밖을 부른다: ${forbidden}`);
+    }
+    // 받은 값을 판정에 그대로 싣는다.
+    assert.ok(workflow.includes("actingForEmployeeIds,"));
+    assert.ok(workflow.includes("const mine = isMyStep(step, {"));
+  });
+
+  check("🔴 결재함 화면은 아무것도 더 하지 않는다 — 조회가 제 손으로 싣는다", () => {
+    assert.ok(screen.includes("pendingForApprover(member)"));
+    assert.ok(!screen.includes("actingForEmployeeIds"), "화면이 목록을 따로 나른다");
+  });
+
+  /* ---------------------------------------------------------------- */
+  /* 6. 🔴 자기 신청은 자기가 결재 못 한다 — 위임으로도 못 넘는다         */
   /* ---------------------------------------------------------------- */
 
   check("🔴 결재함 조회가 **누른 사람**으로 자기 신청을 뺀다 (맡긴 사람이 아니다)", () => {
@@ -576,43 +466,67 @@ async function main() {
   });
 
   /* ---------------------------------------------------------------- */
-  /* 9. 🔴 「못 물었다」가 밖으로 나오는 길                               */
+  /* 7. 🔴 묻던 길이 걷혔고, 🔴 받는 쪽은 남아 있다                      */
   /* ---------------------------------------------------------------- */
 
-  check("결과에 싣고 · 액션이 안내를 붙이고 · 화면이 그린다", () => {
-    // ① 결과에 싣는다. 🔴 boolean 이 아니라 true 뿐이라 「물었는데 멀쩡했다」와
-    //    섞이지 않는다.
-    assert.ok(workflow.includes("portalDelegationUnavailable?: true"));
-    assert.ok(!/portalDelegationUnavailable\?: boolean/.test(workflow));
-    assert.ok(workflow.includes("function notePortalOutage("));
-    // 나가는 길이 넷이다(막힘 · 반려 · 승인 · 확정) — 하나만 빠져도 그 길에서
-    // 안내가 조용히 사라진다.
-    const 실은자리 = workflow.match(/notePortalOutage\(/g) ?? [];
-    assert.equal(실은자리.length, 4, `결과에 싣는 자리가 ${실은자리.length}군데다`);
-    // ② 액션이 글자를 붙인다.
-    assert.ok(action.includes("result.portalDelegationUnavailable"));
-    assert.ok(action.includes("PORTAL_DELEGATION_UNAVAILABLE_NOTICE"));
-    // ③ 안내 글이 「없다」가 아니라 「확인하지 못했다」라고 말한다.
-    const labels = withoutComments(read("src/lib/leave/labels.ts"));
-    assert.match(labels, /PORTAL_DELEGATION_UNAVAILABLE_NOTICE\s*=/);
-    assert.match(labels, /확인하지 못했습니다/);
+  const sources = allSources();
+
+  check("🔵 표본이 비지 않았다 — src 를 실제로 읽었다", () => {
+    assert.ok(sources.length > 50, `읽은 파일이 ${sources.length}개뿐이다`);
+    assert.ok(sources.some((f) => f.path === "src/lib/leave/workflow.ts"));
   });
 
-  check("🔴 상한이 2초다 — 설계서의 3초가 아니라 이 집의 관례다", () => {
-    const oidc = withoutComments(read("src/lib/auth/oidc.ts"));
-    const at = oidc.indexOf("export async function fetchPortalActingSubjects");
-    assert.ok(at > 0, "묻는 함수를 찾지 못했다");
-    const body = oidc.slice(at);
-    assert.equal(/\bthrow\b/.test(body), false, "🔴 묻는 통로가 던진다 — 결재 화면이 깨진다");
-    assert.ok(body.includes("signal: AbortSignal.timeout(NOTIFICATIONS_TIMEOUT_MS)"), "상한이 없다");
-    // 🔴 이 집의 네 통로와 **같은 상수**를 쓴다. 제 값을 따로 두면 느릴 때 어느
-    //    쪽이 느린지 알 수 없게 된다.
-    const limit = oidc.match(/const NOTIFICATIONS_TIMEOUT_MS = (\d+);/);
-    assert.ok(limit && Number(limit[1]) === 2000, "상한이 2초가 아니다");
+  check("🔴 포털에 **묻던** 이름이 src 어디에도 없다", () => {
+    for (const 걷어낸이름 of [
+      "fetchPortalActingSubjects",
+      "resolvePortalActingDelegations",
+      "resolveActingDelegations",
+      "NO_PORTAL_DELEGATIONS",
+      "PortalActingDelegations",
+      "approval-delegation",
+    ]) {
+      const 남은곳 = sources.filter((f) => f.code.includes(걷어낸이름));
+      assert.deepEqual(남은곳.map((f) => f.path), [], `🔴 ${걷어낸이름} 가 남아 있다`);
+    }
   });
 
-  portal.closeAllConnections();
-  await new Promise<void>((resolve) => portal.close(() => resolve()));
+  check("🔴 「못 물었다」라는 **상태 자체**가 없다", () => {
+    // 🔴 **`unavailable` 이라는 낱말 자체는 금지하지 않는다.** 통합 승인함에
+    //    내주는 답에도 같은 칸이 있는데(portal-approvals.ts 의
+    //    `unavailable: "employee_not_linked"`) 그것은 **다른 뜻**이다 — 「이
+    //    시스템에 명단이 안 이어졌다」이고 위임과 아무 상관이 없다. 넓게 금지하면
+    //    멀쩡한 쓰임을 지우게 된다.
+    for (const 걷어낸이름 of [
+      "portalDelegationUnavailable",
+      "notePortalOutage",
+      "PORTAL_DELEGATION_UNAVAILABLE_NOTICE",
+      "portal.unavailable",
+    ]) {
+      const 남은곳 = sources.filter((f) => f.code.includes(걷어낸이름));
+      assert.deepEqual(남은곳.map((f) => f.path), [], `🔴 ${걷어낸이름} 가 남아 있다`);
+    }
+    // 사람에게 보이던 안내 글도 함께 걷혔다.
+    assert.ok(!sources.some((f) => f.code.includes("결재권 위임을 확인하지 못했습니다")));
+  });
+
+  check("🔴 **받는 통로가 쓰는 것은 남아 있다** — 같이 쓸려 나가기 쉬운 자리", () => {
+    // 없어지면 포털의 전파가 500 으로 거절되고 **세 시스템의 위임 지정이 통째로
+    // 막힌다**(설계 B-13). 두 단 변환의 첫 단이라 이름이 「묻기」처럼 보인다.
+    const wiring = withoutComments(read("src/lib/auth/portal-delegations.ts"));
+    assert.match(wiring, /export async function findEmployeeIdsBySubjects/);
+    const route = withoutComments(read("src/app/api/integration/delegations/route.ts"));
+    assert.ok(route.includes("lookup: findEmployeeIdsBySubjects"), "🔴 통로가 그것을 안 꽂는다");
+    // 거르는 줄이 읽는 쪽·화면과 한 벌이어야 「읽을 때는 되는데 쓸 때는 안 되는」
+    // 사람이 안 생긴다.
+    assert.ok(wiring.includes("eq(webUsers.isActive, true)"));
+    assert.ok(wiring.includes("eq(webUsers.isDeleted, false)"));
+  });
+
+  await checkAsync("🔴 uuid 모양이 아닌 번호는 **DB 에 묻기 전에** 버린다", async () => {
+    // auth_sub 는 uuid 열이라 모양이 아닌 값으로 조회하면 드라이버가 던진다.
+    // 🔵 이 호출은 DB 에 닿지 않는다 — 걸러 내고 나면 물을 것이 없어 바로 끝난다.
+    assert.deepEqual(await delegations.findEmployeeIdsBySubjects(["그냥-글자", ""]), []);
+  });
 
   console.log(`\n${passed}개 통과`);
 }

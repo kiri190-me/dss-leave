@@ -7,9 +7,9 @@
  * **써 준다.** 그래서 이 집에 처음으로 위임을 **저장하는 자리**가 생겼다
  * (`web_portal_approval_delegations`).
  *
- * 🔵 **묻는 쪽(leave/approval-delegation.ts)은 아직 그대로 돈다.** 이 조각은
- * 받는 자리만 만든다 — 읽는 길을 이 표로 옮기고 묻는 길을 걷어내는 것은 다음
- * 조각의 일이다. 그래서 두 파일이 한동안 나란히 있다.
+ * 🟢 **묻던 쪽은 2026-11-16 저녁에 걷혔다**(leave/approval-delegation.ts 가
+ * 통째로 없어졌다). 이제 이 표를 적는 것이 여기이고, 그것을 읽어 결재 판정에
+ * 올리는 것은 auth/portal-delegations.ts 다 — 쓰는 쪽과 읽는 쪽 둘뿐이다.
  *
  * ── 🔴 저쪽과 **반대로** 처신한다 ─────────────────────────────────────────
  * 묻는 쪽은 **던지지 않는다.** 포털이 죽어도 결재는 그대로 진행되어야 하기
@@ -29,13 +29,32 @@
  * 멀쩡히 뜻이 있다. 그래서 **줄을 안 만들고 200 으로 「해당 없음」**을 돌려준다.
  *
  * ── DB 를 **인자로 받는다** ───────────────────────────────────────────────
- * leave/approval-delegation.ts · approval-nudge.ts 와 같은 자리다. 그래서 모양
- * 검사와 변환 판단을 DB 없이 그대로 돌려 볼 수 있고(`npm run test:delegation-sync`),
- * 배선은 auth/portal-delegation-store.ts 와 통로에 남는다.
+ * leave/approval-nudge.ts · leave/portal-notifications.ts 와 같은 자리다. 그래서
+ * 모양 검사와 변환 판단을 DB 없이 그대로 돌려 볼 수 있고
+ * (`npm run test:delegation-sync`), 배선은 auth/portal-delegation-store.ts 와
+ * 통로에 남는다.
  * ============================================================================
  */
 import { isUuid } from "@/lib/ids";
-import type { DelegatedApproverRow } from "./approval-delegation";
+
+/**
+ * 포털 번호 한 줄을 이 시스템의 계정·명단으로 되짚은 결과.
+ *
+ * 🔴 `employeeId` 가 **null 일 수 있다** — 계정은 있는데 명단에 안 이어진
+ * 사람이다(머리말의 중간 단). 조회가 그 줄을 **버리지 않고 그대로 올려 주어야**
+ * 「계정이 아예 없는 사람」과 갈라 `not_applicable` 의 까닭을 둘로 나눌 수 있다
+ * (아래 `employeeIdOf`).
+ *
+ * 🔵 2026-11-16 저녁까지 이 타입은 leave/approval-delegation.ts 에 있었다. 그
+ * 파일은 **포털에 묻던 쪽**의 판단 그릇이었고, 묻는 길을 걷어내면서 통째로
+ * 없어졌다(설계 B-12). 이제 이 모양을 쓰는 것은 **받는 쪽**뿐이라 여기로
+ * 옮겼다 — 조회 자체는 여전히 auth/portal-delegations.ts 의
+ * `findEmployeeIdsBySubjects` 한 곳이다.
+ */
+export type DelegatedApproverRow = {
+  authSub: string;
+  employeeId: string | null;
+};
 
 /**
  * 포털이 보내는 두 가지 말. 🔴 **글자가 세 시스템에서 같아야 한다**(A/S ·

@@ -30,7 +30,6 @@ import {
   type LeaveType,
 } from "@/lib/db/schema";
 import { nudgeApprovalCreated } from "./approval-nudge";
-import { NO_PORTAL_DELEGATIONS, type PortalActingDelegations } from "./approval-delegation";
 import { isMyStep } from "./approval-scope";
 import {
   approvalChainFor,
@@ -51,36 +50,18 @@ import {
 } from "./rules";
 
 /**
- * 🔴 `portalDelegationUnavailable` 은 **「포털에 못 물은 채로 판정했다」**이다.
- *
- * 결재권 위임은 포털 한 곳에 있고(설계 B-1), 못 물었을 때는 위임 없이 그대로
- * 진행한다(설계 B-6) — 본인은 멀쩡히 누르고 **대리인만 조용히 막힌다.** 그
- * 「조용히」가 이 저장소들에서 가장 비싼 결함 모양이라, 설계 B-7 이 **눈에
- * 보이는 안내**를 띄우라고 못 박았다. 화면이 그 사실을 알 길은 결과값뿐이다.
- *
- * 🔴 **`boolean` 이 아니라 `true` 뿐이다.** `false` 를 쓸 수 있게 두면 「물어
- * 봤는데 멀쩡했다」를 적는 자리가 생기고, 그러면 칸이 없는 것(안 물었다)과
- * 거짓인 것(물었는데 멀쩡)이 화면에서 같은 가지로 뭉개진다.
+ * 🔵 2026-11-16 저녁까지 여기에 `portalDelegationUnavailable` 칸이 있었다 —
+ * 「포털에 결재권 위임을 **못 물은 채로** 판정했다」는 표시이고, 화면이 그걸 보고
+ * 「잠시 뒤 다시 시도해 주세요」를 붙였다(설계 B-6·B-7). 위임을 포털이 **써 주는**
+ * 방식으로 뒤집히면서(B-12) **「못 물음」이라는 상태 자체가 없어져** 그 칸과
+ * 안내를 함께 걷어냈다. 지금 읽는 것은 이 시스템의 표이고, 그것을 못 읽는 날이면
+ * 이 화면은 어차피 한 줄도 안 그려진다.
  */
 export type WorkflowResult =
-  | { ok: true; message: string; requestId?: string; code: string; portalDelegationUnavailable?: true }
-  | { ok: false; error: string; portalDelegationUnavailable?: true };
+  | { ok: true; message: string; requestId?: string; code: string }
+  | { ok: false; error: string };
 
 const fail = (error: string): WorkflowResult => ({ ok: false, error });
-
-/**
- * 결과에 「포털에 못 물었다」를 얹는다. 🔵 못 물은 적이 없으면 **받은 값을
- * 그대로** 돌려준다 — 평소(포털이 멀쩡할 때)에는 아무 비용도 없다.
- *
- * 🔴 성공·실패를 가리지 않는다. 막힌 쪽에 필요한 것은 분명하지만(위임으로
- * 통과했어야 할 사람이 막힌 그 순간이다), 성공한 쪽에도 그대로 싣는 까닭은
- * **가지를 두지 않기 위해서**다 — 「어느 때만 실린다」가 생기면 화면이 그 조건을
- * 한 벌 더 적게 되고, 두 벌이 갈리는 날 안내가 조용히 사라진다.
- */
-function notePortalOutage(result: WorkflowResult, portal: PortalActingDelegations): WorkflowResult {
-  if (!portal.unavailable) return result;
-  return { ...result, portalDelegationUnavailable: true };
-}
 
 function describe(r: Pick<LeaveRequest, "leaveType" | "startDate" | "endDate">): string {
   return `${LEAVE_TYPE_INFO[r.leaveType].label} ${formatRange(r.startDate, r.endDate, true)}`;
@@ -572,22 +553,25 @@ export async function withdrawRequest(member: Member, requestId: string): Promis
 /**
  * 승인·반려.
  *
- * @param portal 포털에 맡긴 결재권 위임을 **미리 물어 둔 값**(설계 B-9).
+ * @param actingForEmployeeIds 지금 이 사람이 **대신 결재할 수 있는** 사람들의
+ *        명단 번호(설계 B-9). 사람을 읽을 때 이미 딸려 온 값이라 서버 액션이
+ *        `member.employee.actingForEmployeeIds` 를 그대로 넘긴다
+ *        (auth/guards.ts 의 `loadEmployee`).
  *
- * 🔴 **이 함수가 제 손으로 묻지 않는다.** 판정이 DB 거래 안에서 도는데 거기에
- * 망 호출을 넣으면 거래가 망 지연만큼 열려 있게 된다(설계 C-3). 묻는 일은
- * 거래를 열기 전에 서버 액션이 한다(app/actions/leave.ts 의 `decideAction`
- * → auth/portal-delegations.ts).
+ * 🔴 **이 함수가 제 손으로 읽지 않는다.** 판정이 DB 거래 **안에서** 도는데,
+ * 거기서 또 조회를 던지면 결재 행 잠금을 쥔 채로 한 왕복을 더 기다린다. 값으로
+ * 들고 들어오면 거래는 꼭 필요한 동안만 열려 있다(설계 C-3 이 망 호출을 두고 한
+ * 말이고, 조회가 된 지금도 같은 까닭이 남는다).
  *
- * 🔴 **기본값은 「안 물었다」**다. 그래서 이 함수를 직접 부르는 시험·스크립트는
- * 사내망에 나가지 않고, 예전과 똑같이 **본인 단계만** 결재한다.
+ * 🔴 **기본값은 빈 목록**이다. 그래서 이 함수를 직접 부르는 시험·스크립트는
+ * 예전과 똑같이 **본인 단계만** 결재한다.
  */
 export async function decideStep(
   member: Member,
   stepId: string,
   approve: boolean,
   commentRaw: string,
-  portal: PortalActingDelegations = NO_PORTAL_DELEGATIONS,
+  actingForEmployeeIds: readonly string[] = [],
 ): Promise<WorkflowResult> {
   const comment = commentRaw.trim().slice(0, 300) || null;
   if (!isUuid(stepId)) return fail("결재를 찾을 수 없습니다.");
@@ -613,9 +597,9 @@ export async function decideStep(
       employeeId: member.employee.id,
       rankId: member.employee.rankId,
       isApprover: member.isApprover,
-      // 🔴 포털에 맡긴 결재권 위임(설계 B-9). 거래를 열기 **전에** 물어 둔
-      //    값이고, 못 물었으면 비어 있다 — 그때도 본인 단계는 그대로 눌린다.
-      actingForEmployeeIds: portal.actingForEmployeeIds,
+      // 🔴 결재권 위임(설계 B-9). 거래를 열기 **전에** 읽어 둔 값이고, 비어
+      //    있으면 예전과 똑같이 본인 단계만 눌린다.
+      actingForEmployeeIds,
     });
     // 🔴 **자기 신청은 자기가 결재하지 못한다 — 위임으로도 못 넘는다.** 보는
     //    것은 **실제로 누른 사람**(member)이지 맡긴 사람이 아니다. 남의 결재권을
@@ -676,11 +660,8 @@ export async function decideStep(
     return { finished, waitingFor, requestId: req.id };
   });
 
-  // 🔴 나가는 길 **전부**에 「포털에 못 물었다」를 얹는다(notePortalOutage).
-  //    막힌 쪽이 그 안내가 꼭 필요한 자리이고, 성공한 쪽에 가지를 두지 않는
-  //    까닭은 그 함수 머리말에 있다.
   if ("error" in outcome) {
-    return notePortalOutage(fail(outcome.error ?? "처리하지 못했습니다."), portal);
+    return fail(outcome.error ?? "처리하지 못했습니다.");
   }
   // 🔴 **다음 단계 사람에게 새로 차례가 왔다.** 앞사람이 승인하면
   //    `promoteNextStep` 이 잠들어 있던 단계를 깨우므로, 그 사람에게는 지금
@@ -688,18 +669,15 @@ export async function decideStep(
   //    주기 작업을 기다리게 된다. 커밋이 끝난 뒤에 찌른다.
   await nudgePortalApprovalCreated(outcome.requestId);
   if (!approve) {
-    return notePortalOutage({ ok: true, message: "반려했습니다.", code: "rejected" }, portal);
+    return { ok: true, message: "반려했습니다.", code: "rejected" };
   }
-  return notePortalOutage(
-    {
-      ok: true,
-      message: outcome.finished
-        ? "승인했습니다. 마지막 결재라 확정되었습니다."
-        : nextTurnMessage("승인했습니다.", outcome.waitingFor),
-      code: outcome.finished ? "finished" : "approved",
-    },
-    portal,
-  );
+  return {
+    ok: true,
+    message: outcome.finished
+      ? "승인했습니다. 마지막 결재라 확정되었습니다."
+      : nextTurnMessage("승인했습니다.", outcome.waitingFor),
+    code: outcome.finished ? "finished" : "approved",
+  };
 }
 
 /* ------------------------------------------------------------------ */

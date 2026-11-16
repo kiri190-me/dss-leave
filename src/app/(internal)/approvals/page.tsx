@@ -3,7 +3,6 @@ import { ActionForm } from "@/components/ActionForm";
 import { KindBadge, StatusBadge, StepTrail, TypeChip } from "@/components/badges";
 import { DoneBanner } from "@/components/DoneBanner";
 import { requireMember } from "@/lib/auth/guards";
-import { resolvePortalActingDelegations } from "@/lib/auth/portal-delegations";
 import { formatRange } from "@/lib/dates";
 import {
   decidedBy,
@@ -12,11 +11,7 @@ import {
   loadRules,
   pendingForApprover,
 } from "@/lib/leave/data";
-import {
-  KIND_LABEL,
-  PORTAL_DELEGATION_UNAVAILABLE_NOTICE,
-  formatDays,
-} from "@/lib/leave/labels";
+import { KIND_LABEL, formatDays } from "@/lib/leave/labels";
 
 /**
  * 결재함: 내 승인을 기다리는 신청 + 내가 처리한 기록.
@@ -25,6 +20,11 @@ import {
  * 오른 사람은 직급에 결재권이 없어도 자기 단계를 결재해야 하기 때문이다.
  * 이 화면이 보여 주는 것은 **내 단계와 내가 처리한 기록뿐**이라(data.ts 의
  * pendingForApprover · decidedBy) 결재할 것이 없는 사람에게는 빈 화면이 된다.
+ *
+ * 🔵 **결재권 위임으로 대신 누를 결재도 같은 목록에 뜬다**(설계 B-9). 그 목록을
+ * 싣는 자리는 data.ts 의 `deciderOf` 한 곳이고, 이 화면은 아무것도 더 하지
+ * 않는다 — 2026-11-16 저녁까지는 여기서 포털에 묻고 그 값을 조회에 넘겼는데,
+ * 포털이 **써 주는** 방식으로 뒤집히면서(B-12) 그 왕복이 사라졌다.
  */
 export default async function ApprovalsPage({
   searchParams,
@@ -33,18 +33,8 @@ export default async function ApprovalsPage({
 }) {
   const member = await requireMember();
   const sp = await searchParams;
-  // 🔴 **목록을 짓기 전에** 포털에 「지금 내가 누구를 대신할 수 있나」를 묻는다
-  //    (설계 B-9 · C-3). 조회가 스스로 묻지 않는 까닭은 data.ts 의 deciderOf
-  //    주석에 있다 — 포털이 **우리를** 부르는 통로도 같은 조회를 쓰기 때문이다.
-  //
-  // 🔴 넘기지 않으면 대신 눌러야 할 결재가 **목록에 아예 뜨지 않는다.** 그러면
-  //    누를 길도 없다(결재함이 이 시스템의 유일한 결재 화면이다).
-  //
-  // 🔵 왕복 한 번·상한 2초이고, 못 물어도 던지지 않는다 — 그때는 내 단계만
-  //    보이고 아래 안내가 뜬다(설계 B-6·B-7).
-  const portal = await resolvePortalActingDelegations(member.user.authSub);
   const [items, history, holidays, rules] = await Promise.all([
-    pendingForApprover(member, portal.actingForEmployeeIds),
+    pendingForApprover(member),
     decidedBy(member.employee.id),
     loadHolidaySet(),
     loadRules(),
@@ -68,19 +58,6 @@ export default async function ApprovalsPage({
       <section>
         <h1 className="mb-1 text-xl font-semibold text-slate-900">결재함</h1>
         <DoneBanner code={sp.done} className="mb-4" />
-        {/*
-          🔴 포털에 결재권 위임을 못 물었다 — **대신 결재만** 지금 안 듣는다
-          (설계 B-6·B-7). 내 단계는 아래 목록에 그대로 있고 누르면 그대로
-          된다. 이 안내가 없으면 대신 눌러야 하는 사람에게는 「결재함이
-          비어 있다」로만 보여, 포털이 앓는 동안 아무도 신고하지 않는다.
-          🔵 포털이 멀쩡하거나 애초에 안 묻는 기계(임시 로그인만 쓰는 PC)
-          에서는 값이 서지 않아 이 줄이 그려지지 않는다.
-        */}
-        {portal.unavailable && (
-          <p className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-900">
-            {PORTAL_DELEGATION_UNAVAILABLE_NOTICE}
-          </p>
-        )}
         <p className="mb-4 text-sm text-slate-500">
           <b>지금 내 차례인</b> 신청입니다. 결재는 결재선을 따라 <b>한 명씩 차례로</b> 갑니다 — 내가 승인하면 다음
           사람에게 넘어가고, 마지막 사람이 승인하면 확정됩니다. 한 명이라도 반려하면 그 자리에서 끝나고 뒷사람에게는

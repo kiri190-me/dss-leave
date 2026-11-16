@@ -68,10 +68,30 @@ export type FindPortalActor = (subject: string) => Promise<PortalActor | null>;
  * 구조만 받는 이유: 이 파일이 guards.ts(→ next/navigation → DB)를 끌어오면
  * 시험이 돌지 않는다. `Viewer` 가 이 모양에 그대로 들어맞으므로 판정은 하나다 —
  * 화면이 쓰는 `isApprover`(직급의 결재권)를 알림도 그대로 쓴다.
+ *
+ * ── 🔴 결재권 위임도 **그대로 따라간다** (2026-11-16) ─────────────────────
+ * 사람을 읽는 길이 화면과 같으므로(auth/portal-actor.ts → guards.ts 의
+ * `loadEmployee`) 「지금 대신 결재할 수 있는 사람들」이 여기까지 딸려 온다. 그
+ * 값을 싣지 않으면 **결재함에는 뜨는데 알림 종에는 안 뜨는** 결재가 생긴다 —
+ * 어긋나도 아무 오류가 안 나는 모양이다.
+ *
+ * 🔵 2026-11-16 저녁까지는 일부러 **안 실었다.** 그때는 위임을 알아내려면 포털에
+ * 물어야 했는데, 이 길은 **포털이 우리를 부르는** 통로라 거기서 되물으면 서로를
+ * 기다리게 된다(설계 D-8 ②). 포털이 **써 주는** 방식으로 바뀌어 제 표에서 읽게
+ * 된 지금은 되물을 일이 없다 — 🔴 **이 파일은 여전히 DB 를 모른다.** 값으로
+ * 받기만 한다.
  */
 export function portalActorOf(viewer: {
   user: { role: UserRole };
-  employee: { id: string; rankId: string } | null;
+  employee: {
+    id: string;
+    rankId: string;
+    /**
+     * 🔴 없으면 「위임 없음」이다. 화면이 지나는 길은 늘 값을 싣는다 —
+     * 비워 두고 부르는 것은 이 판단을 DB 없이 돌려 보는 시험뿐이다.
+     */
+    actingForEmployeeIds?: readonly string[];
+  } | null;
   isApprover: boolean;
 }): PortalActor {
   return {
@@ -81,6 +101,7 @@ export function portalActorOf(viewer: {
           employeeId: viewer.employee.id,
           rankId: viewer.employee.rankId,
           isApprover: viewer.isApprover,
+          actingForEmployeeIds: viewer.employee.actingForEmployeeIds,
         }
       : null,
   };

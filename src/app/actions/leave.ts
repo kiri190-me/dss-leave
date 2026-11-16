@@ -5,8 +5,6 @@ import { redirect } from "next/navigation";
 
 import type { ActionState } from "@/lib/action-state";
 import { requireAdmin, requireMember, safeReturnTo } from "@/lib/auth/guards";
-import { resolvePortalActingDelegations } from "@/lib/auth/portal-delegations";
-import { PORTAL_DELEGATION_UNAVAILABLE_NOTICE } from "@/lib/leave/labels";
 import {
   adminCancel,
   decideStep,
@@ -25,21 +23,12 @@ function field(formData: FormData, key: string): string {
  * 성공하면 결과 코드를 달고 화면을 옮긴다 (?done=코드 → 화면 위 안내 문구).
  * 처리한 카드가 목록에서 사라지면 폼 아래 문구도 함께 사라지기 때문이다.
  *
- * 🔴 **「포털에 결재권 위임을 못 물었다」는 실패한 자리에서만 말한다**
- * (설계 B-6·B-7). 못 물어도 결재는 그대로 진행되므로 성공한 사람에게는 할 말이
- * 없고, 막힌 사람에게는 **까닭을 짐작할 유일한 단서**다 — 「권한이 없습니다」만
- * 띄우면 대신 눌러야 하는 사람이 자기 권한을 의심하며 끝낸다.
- * 🔵 성공 쪽에 못 싣는 까닭이 하나 더 있다: 성공하면 이 함수는 `redirect` 로
- * 떠나므로 돌려줄 값 자체가 없다(`?done=` 코드 한 글자만 들고 간다).
+ * 🔵 2026-11-16 저녁까지 여기서 「포털에 결재권 위임을 못 물었습니다」 한 줄을
+ * 실패 쪽에 덧붙였다(설계 B-7). 위임을 포털이 **써 주는** 방식으로 뒤집히면서
+ * (B-12) 「못 물음」이라는 상태가 없어져 함께 걷어냈다.
  */
 function finish(result: WorkflowResult, path: string, code?: string): ActionState {
-  if (!result.ok) {
-    return {
-      error: result.portalDelegationUnavailable
-        ? `${result.error} ${PORTAL_DELEGATION_UNAVAILABLE_NOTICE}`
-        : result.error,
-    };
-  }
+  if (!result.ok) return { error: result.error };
   revalidatePath("/", "layout");
   const sep = path.includes("?") ? "&" : "?";
   redirect(`${path}${sep}done=${code ?? result.code}`);
@@ -88,13 +77,15 @@ export async function withdrawAction(_prev: ActionState, formData: FormData): Pr
  * 때문이다. 진짜 판정은 `decideStep` 이 **단계마다** 한다 — 내 단계가
  * 아니면 거기서 막힌다 (approval-scope.ts).
  *
- * ── 🔴 포털에 **먼저** 묻는다 — 거래가 열리기 전이다 (2026-11-16) ─────────
- * 결재권 위임은 포털 한 곳에 있다(설계 B-1·B-9). `decideStep` 은 판정을 DB
- * 거래 **안에서** 하므로, 그 안에서 포털을 부르면 거래가 망 지연만큼 열려
- * 있게 된다(설계 C-3). 그래서 여기서 묻고 **값만 들고 들어간다.**
+ * ── 🔴 결재권 위임은 **거래가 열리기 전에** 읽힌다 (2026-11-16) ───────────
+ * 위임 목록은 `requireMember()` 가 사람을 읽을 때 이미 딸려 온다
+ * (auth/guards.ts 의 `loadEmployee` → auth/portal-delegations.ts). `decideStep`
+ * 은 판정을 DB 거래 **안에서** 하므로, 그 안에서 또 조회를 던지면 결재 행 잠금을
+ * 쥔 채로 한 왕복을 더 기다리게 된다(설계 C-3). 그래서 **값만 들고 들어간다.**
  *
- * 🔵 왕복은 한 번뿐이고 상한은 2초다. 포털이 앓아도 결재는 그대로 진행되고
- * (설계 B-6) 대신 눌러야 하는 사람에게만 안내가 뜬다(위 `finish`).
+ * 🔴 **그 목록의 열쇠는 검증된 세션에서 왔다.** 폼에서 온 값으로 사람을 고르는
+ * 자리가 한 군데도 없다 — 그러면 남의 결재권을 자기 것이라고 주장할 수 있는
+ * 문이 된다.
  */
 export async function decideAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
   const member = await requireMember();
@@ -102,16 +93,14 @@ export async function decideAction(_prev: ActionState, formData: FormData): Prom
   if (decision !== "approve" && decision !== "reject") {
     return { error: "승인 또는 반려를 골라 주세요." };
   }
-  // 🔴 묻는 열쇠는 **검증된 세션**의 authSub 다(= 포털 users.id). 폼에서 온
-  //    값으로 사람을 고르지 않는다 — 그러면 남의 결재권을 자기 것이라고
-  //    주장할 수 있는 문이 된다.
-  const portal = await resolvePortalActingDelegations(member.user.authSub);
   const result = await decideStep(
     member,
     field(formData, "stepId"),
     decision === "approve",
     field(formData, "comment"),
-    portal,
+    // 🔴 넘기지 않으면 **대신 누를 결재가 목록에는 뜨는데 눌리지 않는다** —
+    //    결재함 조회는 같은 값을 제 손으로 싣기 때문이다(data.ts 의 deciderOf).
+    member.employee.actingForEmployeeIds,
   );
   return finish(result, "/approvals");
 }
