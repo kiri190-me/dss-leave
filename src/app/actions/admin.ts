@@ -9,6 +9,12 @@ import { revalidatePath } from "next/cache";
 
 import type { ActionState } from "@/lib/action-state";
 import { writeAudit } from "@/lib/audit";
+// 🔴 **역할 위임의 울타리**(2026-11-17). 임시 관리자에게 주지 않는 문이 이 파일에
+//    하나 있다 — `setRoleAction`. 까닭은 그 자리 주석에.
+import {
+  SET_ROLE_DELEGATED_ADMIN_MESSAGE,
+  mayChangeUserRole,
+} from "@/lib/auth/delegated-role";
 import { requireAdmin, type Viewer } from "@/lib/auth/guards";
 import { isYmd } from "@/lib/dates";
 import { db, type Tx } from "@/lib/db";
@@ -355,6 +361,24 @@ export async function setRoleAction(
   formData: FormData,
 ): Promise<ActionState> {
   const admin = await requireAdmin();
+
+  /**
+   * 🔴 **임시 관리자는 여기까지다** (2026-11-17). 결재권 위임으로 받은 휴가 관리자
+   *    자격은 이 집의 관리자 문을 전부 열지만 **계정의 역할만은 못 바꾼다.**
+   *    이 액션은 아무 계정이나 `MEMBER` ↔ `LEAVE_ADMIN` 으로 즉시 바꾸고 **새
+   *    관리자를 만드는 쪽은 아무것도 막지 않으므로**, 열어 두면 임시 관리자가
+   *    **영구 관리자를 찍어 낸다** — 위임 기간이 끝나도 그 역할은 그대로 남아
+   *    「기간 동안만」이라는 말 자체가 무너진다(auth/delegated-role.ts 머리말).
+   * 🔴 **문(`requireAdmin`)으로 막지 않고 여기서 거절한다.** 그쪽은 홈으로 튕기므로
+   *    막힌 사람이 **까닭을 볼 자리가 없고**, 화면을 열어 읽는 것까지 막혀 「지금
+   *    누가 관리자인가」조차 못 본다. 거절 문구는 폼이 그 자리에 그대로 그린다.
+   * 🔴 **화면 분기가 아니다.** 이 액션은 네트워크 경계 너머에서 불리고, 단추를 안
+   *    그리는 것은 울타리가 아니다(auth/guards.ts 머리말의 같은 까닭).
+   * 🔵 **인가는 검증보다 먼저** 본다 — 막힌 사람에게 「역할을 확인하세요」가 먼저
+   *    나오면 무엇이 막았는지가 흐려진다.
+   */
+  if (!mayChangeUserRole(admin)) return { error: SET_ROLE_DELEGATED_ADMIN_MESSAGE };
+
   const userId = formId(formData, "userId");
   const role = text(formData, "role") as UserRole;
   if (!(USER_ROLES as readonly string[]).includes(role)) return { error: "역할을 확인하세요." };

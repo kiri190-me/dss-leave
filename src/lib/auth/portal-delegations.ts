@@ -14,9 +14,14 @@
  * 「없어지는 것들」). 설계 B-6·B-7(못 물었을 때의 처신과 안내)도 같은 까닭으로
  * 이 집에서는 더 읽을 것이 없다.
  *
- * ── 🔴 이 파일에 있는 다섯은 **쓰임이 다르다** ────────────────────────────
+ * ── 🔴 이 파일에 있는 여섯은 **쓰임이 다르다** ────────────────────────────
  *  · 아래 `loadActingForEmployeeIds` — **판정이 읽는 쪽.** 「지금 내가 대신
  *    결재할 수 있는 사람들」을 결재 판정에 올린다. 돌려주는 것은 **번호뿐**이다.
+ *  · 🔴 `loadDelegatorRoles` — **역할 위임이 읽는 쪽**(2026-11-17). 바로 위가
+ *    돌려준 **그 번호들의 역할**만 읽는다. 🔴 **거르개가 한 줄도 없다** — 「지금
+ *    유효한가」는 위가 이미 끝낸 일이고, 여기서 다시 적으면 기간 규칙이 두 벌이
+ *    된다. 그 가운데 `LEAVE_ADMIN` 이 있으면 이 사람은 **기간 동안 임시 휴가
+ *    관리자**다(auth/delegated-role.ts 가 그 판정을 쥔다).
  *  · 🔴 `loadDelegatesForApprovers` — **알리는 쪽이 읽는다**(2026-11-17, 설계
  *    D-8 ①). 위와 **방향이 반대**다: 「이 결재자들을 **누가** 대신할 수 있나」.
  *    로그인한 사람이 제 권한을 묻는 자리가 아니라, **남 여럿**을 한꺼번에
@@ -51,7 +56,12 @@ import { and, asc, eq, gt, inArray, isNull, lte, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 
 import { db } from "@/lib/db";
-import { webEmployees, webPortalApprovalDelegations, webUsers } from "@/lib/db/schema";
+import {
+  webEmployees,
+  webPortalApprovalDelegations,
+  webUsers,
+  type UserRole,
+} from "@/lib/db/schema";
 // 🔴 **모양의 원본은 DB 를 모르는 파일에 있다** — 아래 `DelegatedApproverRow` ·
 //    `DelegationAuditRow` 와 같은 자리다. 「누가 누구를 대신하나」 한 줄을
 //    여기서 다시 적으면 받는 쪽(leave/approval-nudge.ts 의 합치는 함수)과 두
@@ -184,6 +194,88 @@ export async function loadActingForEmployeeIds(
 ): Promise<string[]> {
   const rows = await actingForEmployeeIdsQuery(delegateEmployeeId, now);
   return rows.map((row) => row.delegatorEmployeeId);
+}
+
+/* ------------------------------------------------------------------ */
+/* 🔴 역할 위임 — 「내가 대신하는 사람들의 **역할**」 (2026-11-17)        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 🔴 **거르개가 한 줄도 없는 것이 이 질의의 전부다.** 받는 번호 목록이 이미 위
+ * `loadActingForEmployeeIds` 를 지나온 것이라 **「지금 유효한 위임」 판정은 끝나
+ * 있다.** 여기에 `revoked_at`·`starts_at`·`ends_at` 을 한 줄이라도 적으면 반열린
+ * 구간 규칙이 **한 벌 더** 생기고, 「결재는 대신 누를 수 있는데 역할은 안 넘어오는」
+ * (또는 그 반대의) 짝이 **아무 오류 없이** 생긴다.
+ *
+ * ── 🔴 **열쇠가 한 단 더 있다 — 이 집에만 있는 사정** ─────────────────────
+ *
+ *     web_portal_approval_delegations.delegator_employee_id
+ *       → web_employees.id = web_users.employee_id   ← 여기서 되짚는다
+ *       → web_users.role                              ← 읽는 것은 이 칸 하나
+ *
+ * 위임 표는 **명단 번호**로 적히고(이 파일 머리말의 두 단) 역할은 **계정 표**에
+ * 있다. 재고관리의 같은 기능은 위임도 역할도 포털 번호(`sub`)가 열쇠라 이 변환이
+ * 없었다 — 🔴 그쪽을 베껴 `auth_sub` 로 찾으면 **오류 없이 영원히 빈 목록**이 된다.
+ *
+ * ── 🔴 **역할을 못 찾는 위임자가 실제로 있다** ───────────────────────────
+ *  · 이 집에 **한 번도 로그인한 적 없는** 사람 — 결재선·위임은 명단에서 고르므로
+ *    `web_users` 에 줄이 없는 사람도 결재권자가 될 수 있다. 그 위임은 **결재권만**
+ *    넘긴다.
+ *  · **정지·삭제된 계정** — 아래 두 줄이 그런 줄을 뺀다. 세션(`getSessionUser`)·
+ *    포털 통로(`findPortalActor`)·받는 통로(`findEmployeeIdsBySubjects`)가 쓰는
+ *    **바로 그 조건**이다. 🔴 한쪽만 느슨하면 **그만둔 사람의 계정이 임시 관리자를
+ *    계속 찍어 낸다** — 그 사람은 로그인도 못 하므로 아무도 알아채지 못한다.
+ *  · 🔵 **명단에 안 이어진 휴가 관리자**는 애초에 위임자가 될 수 없다. 이 집은
+ *    명단 연결 없이도 `LEAVE_ADMIN` 일 수 있지만(guards.ts 의 `requireViewer`),
+ *    위임 표의 위임자 칸은 **명단 번호**라 그런 사람은 **적힐 자리가 없다.**
+ *    🔴 못 하는 일이다 — 억지로 꿰맞추지 마라. 그 관리자가 역할을 넘기려면 먼저
+ *    제 계정을 명단에 이어야 한다.
+ *
+ * 🔴 **누구의 역할인지는 안 읽는다.** 묻는 것이 「그 가운데 `LEAVE_ADMIN` 이 있나」
+ * 하나라서다. 사람과 역할을 짝지어 들고 가면 그 짝을 화면에 그리고 싶어지고, 그러면
+ * 번호가 따라 내려간다.
+ *
+ * 🔴 **질의를 만들기만 하고 돌리지 않는다** — 이 파일의 다른 자리와 같다. 시험이
+ * `.toSQL()` 로 구워 「거르개가 없는가」·「역할 칸만 고르는가」를 글자가 아니라
+ * **구워진 SQL** 로 본다.
+ */
+export function delegatorRolesQuery(delegatorEmployeeIds: readonly string[]) {
+  return db
+    .select({ role: webUsers.role })
+    .from(webUsers)
+    .where(
+      and(
+        inArray(webUsers.employeeId, [...delegatorEmployeeIds]),
+        eq(webUsers.isActive, true),
+        eq(webUsers.isDeleted, false),
+      ),
+    );
+}
+
+/**
+ * 🔴 **역할 위임의 입구.** 부르는 곳은 `auth/guards.ts` 의 `getViewer` 하나다.
+ *
+ * 🔴 **빈 목록이면 DB 를 두드리지 않는다.** 이 집 사람 대부분이 위임을 하나도 안
+ * 받았고, 이 길은 **모든 화면이 지나는 자리**라 그 자리마다 왕복을 하나씩 더 하면
+ * 전부가 그만큼 느려진다. drizzle 의 `inArray` 는 빈 목록을 `false` 로 굽기 때문에
+ * 돌려도 답은 같다 — 아끼는 것은 왕복이지 정확함이 아니다.
+ *
+ * 🔴 **던지는 것을 삼키지 않는다** — 이 파일의 다른 입구들과 같다. 여기서 빈 목록
+ * 으로 바꿔 돌려주면 **위임만 조용히 안 듣는** 상태가 되는데, 그것이 이 저장소들
+ * 에서 가장 비싼 결함 모양이다. 🔵 재고관리의 같은 자리는 삼키고 로그만 남겼지만
+ * (그 집은 이 조회가 **모든 비관리자**에게 도는 첫 위임 질의라 던지면 전 화면이
+ * 500 이 된다), 이 집에서는 **바로 앞 질의가 이미 같은 DB 에서 성공한 뒤**라야
+ * 여기까지 온다 — 여기서 터졌다면 그 요청은 어차피 한 줄도 못 그린다.
+ *
+ * @param delegatorEmployeeIds 위 `loadActingForEmployeeIds` 가 준 **명단 번호**
+ *                             목록. 🔴 계정 번호도 포털 번호도 아니다.
+ */
+export async function loadDelegatorRoles(
+  delegatorEmployeeIds: readonly string[],
+): Promise<UserRole[]> {
+  if (delegatorEmployeeIds.length === 0) return [];
+  const rows = await delegatorRolesQuery(delegatorEmployeeIds);
+  return rows.map((row) => row.role);
 }
 
 /* ------------------------------------------------------------------ */

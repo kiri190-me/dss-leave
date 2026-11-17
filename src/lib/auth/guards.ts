@@ -10,7 +10,9 @@
  * - 결재권자  : 직원 중 직급의 결재권이 켜진 사람 (과장·부장·대표)
  * - 결재함    : 위 결재권자 **또는** 결재선에 이름이 오른 사람 **또는** 지금
  *               유효한 결재권 위임을 받은 사람 (canOpenApprovals)
- * - 휴가 관리자: web_users.role = LEAVE_ADMIN
+ * - 휴가 관리자: web_users.role = LEAVE_ADMIN **또는** 🔴 지금 LEAVE_ADMIN 이 맡긴
+ *               결재권 위임을 받고 있는 사람 (2026-11-17, 기간 동안만 · isAdmin).
+ *               🔴 뒤엣사람은 **역할 변경만** 못 한다 (auth/delegated-role.ts).
  */
 import { and, eq, sql } from "drizzle-orm";
 import { redirect } from "next/navigation";
@@ -23,11 +25,15 @@ import {
   webRanks,
   type Employee,
   type Rank,
+  type UserRole,
   type WebUser,
 } from "@/lib/db/schema";
 import { env } from "@/lib/env";
 import { canOpenApprovalBox } from "@/lib/leave/approval-scope";
-import { loadActingForEmployeeIds } from "./portal-delegations";
+// 🔴 **역할 위임**(2026-11-17). 판정은 순수 모듈이, 표를 읽는 일은 위임 쪽 읽기
+//    층이 한다 — 이 파일은 **역할을 읽는 유일한 자리**라서 그 둘을 여기서 잇는다.
+import { decideDelegatedAdmin, needsDelegatorRoles, type DelegatedAdminDecision } from "./delegated-role";
+import { loadActingForEmployeeIds, loadDelegatorRoles } from "./portal-delegations";
 import { RETURN_TO_FALLBACK, safeReturnTo } from "./return-to";
 import { getSessionUser } from "./session";
 
@@ -70,7 +76,27 @@ export type Viewer = {
   user: WebUser;
   /** 명단에 연결되지 않았거나 퇴사 처리된 계정이면 null */
   employee: EmployeeWithRank | null;
+  /**
+   * 휴가 관리자 문이 열리는가. 🔴 **진짜 `LEAVE_ADMIN` 이거나**, 🔴 **`LEAVE_ADMIN`
+   * 이 맡긴 결재권 위임을 지금 받고 있으면**(2026-11-17) 참이다.
+   *
+   * 🔴 **`user.role` 로 다시 묻지 마라.** 승격은 이 칸에서만 일어난다 — 위임으로
+   * 받은 관리자는 `user.role` 이 여전히 `MEMBER` 다(까닭은 auth/delegated-role.ts
+   * 머리말: 감사 로그가 거짓말을 하지 않게 하려는 것이다). 역할 칸으로 울타리를
+   * 적으면 임시 관리자만 조용히 거절당한다.
+   */
   isAdmin: boolean;
+  /**
+   * 🔴 **그 관리자 자격이 결재권 위임에서 왔는가** (2026-11-17).
+   *
+   * 「권한이 있나」가 아니라 **「계정의 역할까지 바꿀 수 있나」를 가르는 값**이다 —
+   * 임시 관리자에게 주지 않는 문이 그 하나뿐이라서다(까닭은
+   * auth/delegated-role.ts 의 `mayChangeUserRole`).
+   * 🔴 **진짜 `LEAVE_ADMIN` 은 위임을 받았든 안 받았든 언제나 `false`** 다. 자격이
+   * 둘이면 높은 쪽이 이긴다 — 여기가 참이 되면 그 사람은 위임을 받았다는 이유만으로
+   * 역할 변경을 잃는다.
+   */
+  delegatedAdmin: boolean;
   /**
    * 🔴 **직급의 결재권**(web_ranks.can_approve)뿐이다. 뜻을 넓히지 않는다 —
    * 이 값은 사유 열람(`canSeeReason`)과 **사람 칸이 빈 옛 직급 단계**의 판정
@@ -159,15 +185,52 @@ export async function loadEmployee(
     : null;
 }
 
+/**
+ * 🔴 **결재권 위임이 역할까지 넘긴다** (2026-11-17). `LEAVE_ADMIN` 이 맡긴 위임의
+ * 대리인은 **그 기간 동안** 휴가 관리자다. 뜻과 까닭은 auth/delegated-role.ts 머리말.
+ *
+ * 🔴 **DB 의 역할 칸을 바꿔 쓰지 않는다.** 아래 `getViewer` 가 매 요청마다 돌기
+ * 때문에 여기서 계산하면 기간이 끝날 때 **저절로** 닫힌다 — 밤에 도는 작업표도,
+ * 만료 처리도 필요 없고, 「여는 조건과 닫는 조건이 다른 곳에」 생기지도 않는다.
+ *
+ * 🔴 **거르는 규칙을 한 줄도 새로 안 적는다.** 기간(반열린 구간)·철회 판정은 넘겨
+ * 받는 목록이 **이미** 끝낸 일이다(portal-delegations.ts 의 `liveDelegationWhere`
+ * 한 곳). 이 함수가 제 손으로 하는 일은 **「역할을 읽어다 판정에 넘기기」** 하나다.
+ *
+ * 🔴 **왕복이 늘지 않는 길이 하나 있어 그것을 골랐다.** 「내가 대신하는 사람들」은
+ * `loadEmployee` 가 **이미** 읽어 온 값이다(결재함 메뉴·배지·종이 쓰는 그 목록).
+ * 여기서 위임 표를 다시 묻지 않고 그 결과를 그대로 받는다 — 다시 물으면 같은 조건을
+ * 두 번 재게 되고, 그 둘이 다른 순간을 보는 날 「결재는 되는데 역할은 안 넘어오는」
+ * 짝이 생긴다.
+ *
+ * 🔴 **못 읽으면 던진다**(삼키지 않는다). 여기까지 왔다는 것은 바로 앞 두 질의가
+ * 같은 DB 에서 이미 성공했다는 뜻이라, 이 자리에서 터진 요청은 어차피 한 줄도 못
+ * 그린다. 삼키면 **위임만 조용히 안 듣는** 상태가 되는데, 그것이 이 저장소들에서
+ * 가장 비싼 결함 모양이다(portal-delegations.ts 의 입구들이 같은 말을 한다).
+ */
+async function resolveDelegatedAdmin(
+  ownRole: UserRole,
+  actingForEmployeeIds: readonly string[],
+): Promise<DelegatedAdminDecision> {
+  // 🔴 묻지 않는 가지도 **같은 판정 함수**를 지난다. 여기서 값을 손으로 지어내면
+  //    「진짜 관리자」의 뜻이 두 곳에 생긴다.
+  if (!needsDelegatorRoles(ownRole, actingForEmployeeIds)) return decideDelegatedAdmin(ownRole, []);
+  return decideDelegatedAdmin(ownRole, await loadDelegatorRoles(actingForEmployeeIds));
+}
+
 /** 현재 요청의 사용자. 한 요청 안에서는 한 번만 읽는다. */
 export const getViewer = cache(async (): Promise<Viewer | null> => {
   const user = await getSessionUser();
   if (!user) return null;
   const employee = user.employeeId ? await loadEmployee(user.employeeId) : null;
+  // 🔴 **명단에 안 이어진 계정은 위임을 받을 수 없다.** 위임 표의 대리인 칸이 명단
+  //    번호라 적힐 자리가 없다 — 그래서 빈 목록이고, 역할도 안 넘어온다.
+  const delegated = await resolveDelegatedAdmin(user.role, employee?.actingForEmployeeIds ?? []);
   return {
     user,
     employee,
-    isAdmin: user.role === "LEAVE_ADMIN",
+    isAdmin: delegated.isAdmin,
+    delegatedAdmin: delegated.delegatedAdmin,
     isApprover: Boolean(employee?.rank.canApprove),
     canOpenApprovals: employee
       ? canOpenApprovalBox({

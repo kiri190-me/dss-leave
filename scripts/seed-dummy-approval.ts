@@ -330,6 +330,9 @@ async function main() {
       user: proxyUser,
       employee,
       isAdmin: proxyUser.role === "LEAVE_ADMIN",
+      // 🔴 위임으로 받은 관리자가 아니다 (2026-11-17, 역할 위임). 이 대리 계정은
+      //    위임을 받은 적이 없으므로 `getViewer` 도 여기서 거짓을 낸다.
+      delegatedAdmin: false,
       isApprover: employee.rank.canApprove,
       canOpenApprovals: canOpenApprovalBox({
         rankCanApprove: employee.rank.canApprove,

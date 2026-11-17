@@ -3,6 +3,9 @@ import type { ReactNode } from "react";
 
 import { logoutAction } from "@/app/actions/auth";
 import type { Viewer } from "@/lib/auth/guards";
+// 🔴 **주소를 화면마다 적지 않는다** — 결재함 안내도 같은 함수를 부른다. 두 벌로
+//    적으면 경로를 옮기는 날 한쪽이 404 로 남는다(그 파일 머리말).
+import { settingsTabHref } from "@/lib/leave/settings-tabs";
 import { HeaderMenuDismiss } from "./HeaderMenuDismiss";
 import { NavLink } from "./NavLink";
 
@@ -93,7 +96,8 @@ function ScreenLinks({
 }
 
 /**
- * 나가는 길이 모인 묶음 — 이름·직급·「휴가 관리자」 배지 + [통합 로그인으로] + [로그아웃].
+ * 나가는 길이 모인 묶음 — 이름·직급·「휴가 관리자」 배지(+ 2026-11-17 부터 위임으로
+ * 받은 사람에게만 붙는 「임시」) + [통합 로그인으로] + [로그아웃].
  * **넓은 화면의 오른쪽 끝과 ☰ 서랍 바닥이 이 조각 하나를 함께 쓴다.**
  *
  * 🔴 차례(이름 → 통합 로그인으로 → 로그아웃)는 두 자리가 같다. 일부러 맞춰 둔 것이다.
@@ -164,6 +168,41 @@ function AccountBox({
           <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-xs text-indigo-700">
             휴가 관리자
           </span>
+        )}
+        {/*
+          🔴 **「임시」** (2026-11-17). 결재권 위임이 역할까지 넘기면서 **위임 기간
+          동안만 휴가 관리자인 사람**이 생겼다. 그 전까지 이 자리는 위 배지만
+          그려서 그 사람에게 **그냥 「휴가 관리자」**로 보였다 — 임시라는 표시도,
+          언제까지인지도 없었다. 그러면 ① 기간이 끝나는 날 **관리자 메뉴가 통째로
+          사라지는데 까닭을 알 자리가 없고**, ② 「역할 변경만 거절당하는」 울타리가
+          고장으로 읽힌다(그 거절 문구는 「위임으로 받은 자격」이라고 말하는데,
+          화면 어디에도 그 사실이 안 적혀 있었다).
+
+          🔴 **진짜 휴가 관리자에게는 한 글자도 안 바뀐다.** `delegatedAdmin` 은
+          진짜 관리자에게 언제나 거짓이라(lib/auth/delegated-role.ts 의
+          `decideDelegatedAdmin`) 이 칸이 아예 안 그려진다.
+
+          🔴 **기간은 안 싣는다. 가는 길만 알려 준다.** 「언제까지인가」를 여기
+          그리려면 위임 줄의 `ends_at` 까지 Viewer 에 실어야 하는데, 그러자고
+          결재 판정이 매달린 조회(`loadActingForEmployeeIds`)의 모양을 바꿀 수는
+          없고, 질의를 하나 더 돌리면 **모든 화면에 딸려 오는** 이 묶음이 그만큼
+          느려진다. 🔵 기간은 이미 [휴가 설정 → 결재권 위임]의 「내가 대신하고
+          있는 것」에 줄마다 적혀 있으므로 **그 자리로 보내기만** 한다. 그 탭은
+          직원에게도 열려 있다(lib/leave/settings-tabs.ts).
+
+          🔵 색은 머리말의 다른 「눈여겨볼 것」(결재함 「대기 N」 배지 · ☰ 의 점)과
+          같은 호박색이다 — 위 역할 배지와 갈라 두어야 한 덩어리로 안 읽힌다.
+          🔵 서랍 안에서 눌러도 맞게 돈다: 서랍은 a·button 을 누르면 저절로
+          접힌다(HeaderMenuDismiss).
+        */}
+        {viewer.delegatedAdmin && (
+          <Link
+            href={settingsTabHref("delegation")}
+            className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-900 hover:bg-amber-200"
+            title="결재권 위임으로 받은 임시 휴가 관리자입니다. 언제까지인지는 [휴가 설정 → 결재권 위임]의 「내가 대신하고 있는 것」에 있습니다."
+          >
+            임시
+          </Link>
         )}
       </span>
       {/*

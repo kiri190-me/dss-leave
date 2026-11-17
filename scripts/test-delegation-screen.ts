@@ -543,12 +543,47 @@ async function main() {
     }
   });
 
+  /**
+   * 🔴 **허락된 것은 이 둘뿐이다** (2026-11-17, 역할 위임). 결재권 위임이 역할까지
+   * 넘기면서 서버 액션 하나(`setRoleAction`)가 「지금 이 사람이 위임으로 받은 임시
+   * 관리자인가」를 **묻게** 됐다.
+   *
+   * 🔵 **묻기만 한다** — `src/lib/auth/delegated-role.ts` 는 표를 읽지도 쓰지도
+   *    않는 순수 판정이다(그 파일 머리말 · scripts/test-delegated-role.ts). 그래서
+   *    이 울타리가 지키려는 것(「이 집에 맡기고 거두는 길이 생기지 않았다」)은
+   *    그대로다.
+   * 🔴 **이름을 못 박아 둔다.** 「위임 비슷한 글자는 다 봐준다」로 풀면 다음 사람이
+   *    여기에 `loadActingForEmployeeIds` 든 표 이름이든 끌어와도 조용히 통과한다.
+   *    아래에서 **어느 파일에서 몇 번 쓰이는지**까지 다시 센다.
+   */
+  const 역할울타리 = [
+    "@/lib/auth/delegated-role",
+    "SET_ROLE_DELEGATED_ADMIN_MESSAGE",
+    "mayChangeUserRole",
+  ];
+
   check("🔴 서버 액션에 위임이 하나도 없다 — 화면에서 바꿀 길이 없다", () => {
     const actions = allSources().filter((f) => f.path.startsWith("src/app/actions/"));
     assert.ok(actions.length >= 3, "🔵 표본이 비었다 — 서버 액션 파일을 못 읽었다");
     for (const f of actions) {
-      assert.ok(!/delegat/i.test(f.code), `🔴 ${f.path} 에 위임을 건드리는 길이 생겼다`);
+      const 남은 = 역할울타리.reduce((code, 이름) => code.split(이름).join(""), f.code);
+      assert.ok(!/delegat/i.test(남은), `🔴 ${f.path} 에 위임을 건드리는 길이 생겼다`);
     }
+  });
+
+  check("🔴 그 하나뿐인 예외가 **번지지 않았다** — 자리도 횟수도 못 박는다", () => {
+    const actions = allSources().filter((f) => f.path.startsWith("src/app/actions/"));
+    for (const 이름 of 역할울타리) {
+      assert.deepEqual(
+        actions.filter((f) => f.code.includes(이름)).map((f) => f.path),
+        ["src/app/actions/admin.ts"],
+        `🔴 ${이름} 을 쓰는 서버 액션 파일이 늘었다`,
+      );
+    }
+    const admin = actions.find((f) => f.path === "src/app/actions/admin.ts")!;
+    // 🔴 묻는 자리가 하나다 — 역할 변경 말고 다른 관리자 문까지 막으면 2026-11-17
+    //    결정(「역할 변경만 빼고 전부」)을 바꾼 것이다.
+    assert.equal(admin.code.split("mayChangeUserRole(").length - 1, 1, "🔴 묻는 자리가 늘거나 줄었다");
   });
 
   console.log(`\n${passed}개 통과`);

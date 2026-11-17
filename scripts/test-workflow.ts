@@ -38,6 +38,11 @@ async function main() {
       user,
       employee,
       isAdmin: user.role === "LEAVE_ADMIN",
+      // 🔴 **위임으로 받은 관리자가 아니다**(2026-11-17, 역할 위임). 이 밑자락은
+      //    위임을 한 줄도 깔지 않으므로 `getViewer` 도 여기서 거짓을 낸다 —
+      //    `isAdmin` 을 `user.role` 로 재는 윗줄과 **같은 상황**이다. 🔵 임시
+      //    관리자가 못 하는 일(역할 변경)은 scripts/test-delegated-role.ts 가 잰다.
+      delegatedAdmin: false,
       isApprover: employee.rank.canApprove,
       canOpenApprovals: canOpenApprovalBox({
         rankCanApprove: employee.rank.canApprove,
