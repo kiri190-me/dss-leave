@@ -1,11 +1,18 @@
 /**
  * 휴가 데이터 읽기. 계산 규칙은 rules.ts, 쓰기(신청·결재)는 workflow.ts 에 있다.
  */
-import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, ne, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 
 import type { EmployeeWithRank, Viewer } from "@/lib/auth/guards";
 import { canSeeReason } from "@/lib/auth/guards";
+// 🔴 **거꾸로 방향**의 위임 조회다 — 「이 결재자들을 누가 대신할 수 있나」.
+//    🔵 화면이 쓰는 정방향(`loadActingForEmployeeIds`)을 이 파일이 부르면 안
+//    된다: 그쪽은 **로그인한 사람**의 목록이고, 싣는 자리는 아래 `deciderOf`
+//    한 곳이어야 「대신 누를 결재가 목록에만 안 뜬다」가 안 생긴다. 여기서
+//    읽는 것은 **남 여럿**의 대리인이고, 그 길에는 로그인한 사람이 아예 없다
+//    (결재가 저장된 뒤 서버가 혼자 도는 자리다).
+import { loadDelegatesForApprovers } from "@/lib/auth/portal-delegations";
 import { todayKst } from "@/lib/dates";
 import { db, type Tx } from "@/lib/db";
 import { isUuid } from "@/lib/ids";
@@ -25,10 +32,12 @@ import {
   type LeaveRequest,
   type Rank,
 } from "@/lib/db/schema";
-// 🔴 **타입만** 빌려 온다(import type — 남는 코드가 없다). 「결재가 생겼다」를
-//    포털에 알리는 판단이 제 계약으로 들고 있는 모양이고, 아래 조회가 그
-//    모양으로 돌려준다. 두 벌로 적지 않으려는 것이다.
-import type { ApprovalNudgeCandidate } from "./approval-nudge";
+// 🔴 **모양은 빌려 오고(두 벌로 적지 않는다), 합치는 셈도 거기서 가져온다.**
+//    「결재가 생겼다」를 포털에 알리는 판단이 제 계약으로 들고 있는 모양이고,
+//    아래 조회가 그 모양으로 돌려준다. 🔵 `withDelegateCandidates` 는 **DB 를
+//    모르는 순수 함수**라 저쪽에 둔 것이다 — 아래 `approvalHistoryRole` 과 같은
+//    자리이고, 그래야 「대리인이 후보에 드는가」를 DB 없이 잴 수 있다.
+import { withDelegateCandidates, type ApprovalNudgeCandidate } from "./approval-nudge";
 // 🔴 **가르기는 DB 를 모르는 파일에 있다**(approval-history.ts) — 「내가 눌렀나
 //    남이 눌렀나」는 값만 보면 답이 나오는 판단이라, DB 없이 그대로 돌려 볼 수
 //    있는 자리에 두었다. 여기서는 조회가 읽어 온 두 칸을 그 함수에 넘기기만 한다.
@@ -714,6 +723,28 @@ export async function pendingApprovalsForPortal(
 export type { ApprovalNudgeCandidate };
 
 /**
+ * 🔴 **어느 단계를 보는가 — 이 한 곳이 정한다**(2026-11-17).
+ *
+ * 아래 두 조회가 이것을 함께 쓴다: 「걸릴 수 있는 사람들」과 「단계에 박힌
+ * 결재자들」(위임을 되짚는 쪽). 🔴 **둘이 다른 단계를 보면** 대리인에게만
+ * 알림이 더 가거나 덜 간다 — 알림이 **더** 가는 쪽은 아무 오류도 안 내고
+ * 받는 사람에게만 보인다.
+ *
+ * 🔴 **열린 단계 하나뿐이다.** `WAITING` 은 아직 차례가 아니고
+ * `APPROVED`·`REJECTED`·`SKIPPED` 는 끝난 단계다. 🔴 **위임을 더하는 조각이
+ * 이 조건을 넓히지 않았다**(설계 D-8 ①) — 넓힌 것은 **사람**이지 **대상
+ * 단계**가 아니다. 여기에 상태를 하나라도 보태면 건너뛴 단계의 결재자에게
+ * 「결재가 생겼다」가 가기 시작한다.
+ */
+function nudgeStepWhere(requestId: string): SQL {
+  return and(
+    eq(webApprovalSteps.requestId, requestId),
+    eq(webApprovalSteps.status, "PENDING"),
+    eq(webApprovalSteps.isDeleted, false),
+  )!;
+}
+
+/**
  * 이 신청의 **지금 열린 단계**에 걸릴 수 있는 사람들. 포털을 쿡 찌르기 직전에
  * 「누구에게 생겼나」를 모으는 자리다.
  *
@@ -744,15 +775,18 @@ export type { ApprovalNudgeCandidate };
  * 보므로(auth/portal-actor.ts) 그 번호로 포털을 불러 봐야 포털이 다시 물었을
  * 때 빈 답이 나온다. 조건을 **그 함수와 글자까지 맞춰** 둔다.
  *
- * 🔵 이 파일에서 이 함수만 `async` 가 아니다. drizzle 의 질의 만들개는
- * `await` 하는 순간에야 DB 에 붙으므로, `async` 를 떼면 **만들어진 SQL 을 DB
- * 없이 펼쳐 볼 수 있다**(검사가 `.toSQL()` 로 읽는다 —
- * scripts/test-approval-nudge.ts). 여기는 이 저장소에서 유일하게 「조건을
- * 거꾸로 적은」 자리라, 누가 뒤에 좁히는 줄을 한 줄 더하면 조용히 결재자가
- * 빠진다. 그것을 잡는 검사가 이 한 줄에 기대고 있다. 부르는 쪽에서 `await`
- * 하는 것은 똑같다.
+ * 🔵 `async` 가 아니다. drizzle 의 질의 만들개는 `await` 하는 순간에야 DB 에
+ * 붙으므로, `async` 를 떼면 **만들어진 SQL 을 DB 없이 펼쳐 볼 수 있다**(검사가
+ * `.toSQL()` 로 읽는다 — scripts/test-approval-nudge.ts). 여기는 이 저장소에서
+ * 유일하게 「조건을 거꾸로 적은」 자리라, 누가 뒤에 좁히는 줄을 한 줄 더하면
+ * 조용히 결재자가 빠진다. 그것을 잡는 검사가 이 한 줄에 기대고 있다.
+ *
+ * 🔴 **이것은 이제 후보의 절반이다**(2026-11-17, 설계 D-8 ①). 포털 위임을 받은
+ * 대리인은 이 질의에 **잡힐 길이 없다** — 단계에는 맡긴 사람의 번호만 박혀 있기
+ * 때문이다. 나머지 절반을 더해 내보내는 자리는 아래 `approvalNudgeCandidates`
+ * 이고, **부르는 쪽(workflow.ts)이 쓰는 것은 그쪽**이다.
  */
-export function approvalNudgeCandidates(
+export function approvalNudgeStepCandidatesQuery(
   requestId: string,
 ): Promise<ApprovalNudgeCandidate[]> {
   return db
@@ -785,13 +819,130 @@ export function approvalNudgeCandidates(
         eq(webUsers.isDeleted, false),
       )!,
     )
-    .where(
+    .where(nudgeStepWhere(requestId));
+}
+
+/**
+ * 🔴 **단계에 「사람으로 박힌」 결재자들** — 위임을 거꾸로 되짚을 **출발점**이다
+ * (2026-11-17, 설계 D-8 ①).
+ *
+ * 🔴 **왜 위 조회의 결과를 그대로 쓰지 않나.** 위는 **옛 직급 단계**에서 그
+ * 직급의 직원을 전부 긁으므로, 거기서 나온 번호를 맡긴 사람으로 보고 되짚으면
+ * **아무도 맡긴 적 없는 사람의 대리인**이 후보에 올라온다. 여기서는 단계의
+ * `approver_employee_id` 만 본다 — 자리의 주인이 번호로 적혀 있는 줄뿐이다.
+ *
+ * ── 🔴 **옛 직급 단계는 위임을 못 받는다. 못 하는 것이라 적어 둔다** ────────
+ * 사람 칸이 빈 옛 단계(2026-09-21 전환 전에 만들어진 행)에는 **자리 주인이
+ * 번호로 적혀 있지 않다.** 포털의 위임은 사람 번호끼리 맺는 약속이라
+ * (`delegator_employee_id`), 주인을 번호로 모르면 「그 사람을 대신할 사람」도
+ * 구할 길이 없다. 직급으로 꿰맞출 수도 있지만 **그러면 안 된다** — 결재 판정이
+ * 바로 그 자리를 막아 두었기 때문이다(approval-scope.ts 의 `isMyStep`:
+ * 「위임은 사람으로 박힌 단계만 넓힌다」, 넓히면 그 직급에 걸린 **남의** 옛
+ * 단계가 통째로 열린다). 여기서만 꿰맞추면 **알림은 가는데 눌러 보면 거절되는**
+ * 사람이 생긴다 — 받는 사람 눈에는 그냥 고장이다.
+ * 🔵 두 DB 모두 2026-09-21 에 옛 단계가 0행이 됐으므로 지금 잃는 것은 없다.
+ *
+ * 🔵 보는 단계는 위와 **같은 조건**이다(`nudgeStepWhere`) — 한 줄 더 붙은 것은
+ * 「사람이 박혀 있는가」뿐이고, 그것은 대상 단계를 **좁히는** 쪽이다.
+ */
+export function nudgeStepApproverIdsQuery(requestId: string) {
+  return db
+    .selectDistinct({ approverEmployeeId: webApprovalSteps.approverEmployeeId })
+    .from(webApprovalSteps)
+    .where(and(nudgeStepWhere(requestId), isNotNull(webApprovalSteps.approverEmployeeId))!);
+}
+
+/**
+ * 대리인들의 **직급과 계정** — 후보 한 줄에 필요한 나머지 칸이다.
+ *
+ * 🔴 **거르는 줄을 위 조회와 글자까지 맞춘다.** 직원의 생사는 보지 않고(공용
+ * 조건이 보지 않으므로), 계정은 정지·삭제를 거른다(`findPortalActor` 가 그
+ * 조건으로 되물어 빈 답을 주기 때문이다). 한쪽만 달라지면 「단계에 걸렸을
+ * 때는 알림이 가는데 위임으로 걸리면 안 가는」 사람이 생긴다.
+ *
+ * 🔵 이미 단계로 걸린 사람은 **묻지 않는다** — 부르는 쪽이 빼고 넘긴다.
+ */
+export function nudgeDelegateRowsQuery(
+  employeeIds: readonly string[],
+): Promise<ApprovalNudgeCandidate[]> {
+  return db
+    .selectDistinct({
+      employeeId: webEmployees.id,
+      rankId: webEmployees.rankId,
+      isApprover: webRanks.canApprove,
+      authSub: webUsers.authSub,
+    })
+    .from(webEmployees)
+    .innerJoin(webRanks, eq(webRanks.id, webEmployees.rankId))
+    .leftJoin(
+      webUsers,
       and(
-        eq(webApprovalSteps.requestId, requestId),
-        eq(webApprovalSteps.status, "PENDING"),
-        eq(webApprovalSteps.isDeleted, false),
-      ),
-    );
+        eq(webUsers.employeeId, webEmployees.id),
+        eq(webUsers.isActive, true),
+        eq(webUsers.isDeleted, false),
+      )!,
+    )
+    .where(inArray(webEmployees.id, [...employeeIds]))
+    .orderBy(asc(webEmployees.id));
+}
+
+/**
+ * 🔴 **알릴 후보 전부** — 단계에 걸린 사람 **더하기** 그들을 지금 대신할 수 있는
+ * 사람 (2026-11-17, 설계 D-8 ①). 포털을 찌르는 배선(workflow.ts)이 부르는 것이
+ * 이 함수다.
+ *
+ * ── 🔴 왜 이 조각이 필요했나 ──────────────────────────────────────────────
+ * 조각 8 이후로 포털 위임을 받은 대리인은 결재함·배지·종·통합 승인함에 모두
+ * 떴다 — 판정(`myStepCondition`)이 위임 목록을 보기 때문이다. 그런데 **「결재가
+ * 생겼다」 알림만** 안 갔다: 알릴 사람을 뽑는 질의가 단계에 박힌 번호 하나만
+ * 보고, 그 사람을 **누가 대신할 수 있나**는 묻지 않았다. 🔴 그래서 대리인은
+ * 결재함을 **제 발로 열어 봐야** 대신 누를 건이 있다는 것을 알았다.
+ *
+ * ── 🔴 판정을 새로 짓지 않는다 ────────────────────────────────────────────
+ * 여기서 하는 일은 후보를 **넓히는 것**뿐이고, 그 후보는 한 명씩 공용 조건에
+ * 되물어 걸러진다(approval-nudge.ts 의 `isPendingFor`). 대리인 줄에 실어 보내는
+ * 「내가 대신할 수 있는 사람들」은 화면이 쓰는 값과 **같은 자리**에서 읽었다 —
+ * 읽는 조건이 `auth/portal-delegations.ts` 한 곳이기 때문이다(정방향
+ * `loadActingForEmployeeIds` 와 거꾸로 `loadDelegatesForApprovers` 가 같은
+ * `liveNowParts` 를 쓴다). 그래서 **결재함에 뜨는 사람과 알림을 받는 사람이
+ * 어긋날 수 없다.**
+ *
+ * 🔵 **세 번 묻는다**(단계 후보 · 단계 주인 · 위임). 앞의 둘은 나란히 돌고, 셋째는
+ * 맡긴 사람 번호가 있을 때만 돈다. 결재가 **생길 때만** 지나는 길이고, 이 함수
+ * 뒤에는 어차피 후보마다 되묻는 질의가 한 번씩 더 붙는다.
+ *
+ * @param now 위임이 살아 있는지 보는 기준 시각. 기본은 **지금**이다 —
+ *            🔴 어딘가에 캐 두면 「끝났는데 아직 알림이 가는」 위임이 생긴다
+ *            (auth/portal-delegations.ts 의 그 까닭).
+ */
+export async function approvalNudgeCandidates(
+  requestId: string,
+  now: Date = new Date(),
+): Promise<ApprovalNudgeCandidate[]> {
+  const [onSteps, owners] = await Promise.all([
+    approvalNudgeStepCandidatesQuery(requestId),
+    nudgeStepApproverIdsQuery(requestId),
+  ]);
+
+  const pairs = await loadDelegatesForApprovers(
+    // 🔵 `is not null` 로 이미 걸렀지만 타입은 그것을 모른다.
+    owners.map((row) => row.approverEmployeeId).filter((id): id is string => id !== null),
+    now,
+  );
+  // 🔵 흔한 정상이다 — 위임이 하나도 없으면 **이 조각 이전과 글자 하나 다르지
+  //    않은** 목록이 그대로 나간다.
+  if (pairs.length === 0) return onSteps;
+
+  const onStepIds = new Set(onSteps.map((row) => row.employeeId));
+  const toRead = [...new Set(pairs.map((pair) => pair.delegateEmployeeId))].filter(
+    (id) => !onStepIds.has(id),
+  );
+  const delegates = toRead.length === 0 ? [] : await nudgeDelegateRowsQuery(toRead);
+
+  // 🔴 합치는 셈(중복 걷기·차례)은 **DB 를 모르는 파일**에 있다 — 이 파일의
+  //    `approvalHistoryRole` 과 같은 자리다. 그래야 「대리인이 후보에 드는가」를
+  //    DB 없이 그대로 재 볼 수 있다(scripts/test-approval-nudge-delegation.ts).
+  return withDelegateCandidates({ onSteps, pairs, delegates });
 }
 
 /**

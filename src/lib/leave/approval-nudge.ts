@@ -24,6 +24,15 @@
  * 여기서 한 줄이라도 다시 적으면 「결재함엔 떴는데 메일이 안 왔다」나 그보다
  * 나쁜 「결재할 게 없는 사람에게 결재 메일이 간다」가 된다.
  *
+ * ── 🔴 2026-11-17: **대리인도 후보에 든다** (설계 D-8 ①) ───────────────────
+ * 포털 위임을 받은 사람은 결재함·배지·종·통합 승인함에는 진작 떴는데
+ * (조각 8), **「결재가 생겼다」 알림만** 못 받고 있었다 — 알릴 사람을 뽑는 질의가
+ * 단계에 박힌 결재자 한 명만 보았기 때문이다. 넓힌 자리는 둘뿐이다:
+ *  · 조회가 **사람을 더 긁는다**(data.ts — 거꾸로 방향 위임 조회를 함께 본다).
+ *  · 그 사람의 위임 목록을 되묻는 자리에 **그대로 얹는다**(아래 `isPendingFor`).
+ * 🔴 **판정은 여전히 한 줄도 없다.** 넓어진 것은 **사람**이고, 대상 단계도
+ * 「네 차례인가」도 공용 조건이 그대로 정한다.
+ *
  * ── 🔴 신청을 **절대 막지 않는다** ─────────────────────────────────────────
  * 부르는 쪽(workflow.ts)은 **커밋이 끝난 뒤**에 이 함수를 부른다. 트랜잭션
  * 안에서 부르면 포털이 죽은 날 휴가 신청 자체가 실패한다. 그리고 이 함수는
@@ -57,7 +66,107 @@ export type ApprovalNudgeCandidate = {
   isApprover: boolean;
   /** 포털 번호. 🔴 **없을 수 있다** — 아래 처리 참조. */
   authSub: string | null;
+  /**
+   * 🔴 **이 사람이 지금 대신 결재할 수 있는 사람들**의 명단 번호
+   * (2026-11-17, 설계 D-8 ①). 결재함·배지·종이 쓰는 칸과 **같은 것**이고
+   * (approval-scope.ts 의 `Decider.actingForEmployeeIds`), 아래에서 되물을 때
+   * **그대로** 얹는다.
+   *
+   * 🔵 화면 쪽은 그 사람의 위임을 **전부** 싣고 여기는 **이 신청의 단계 주인에
+   * 걸린 것만** 싣는다 — 되묻는 질의가 신청 하나로 좁혀 묻기 때문에
+   * (`hasPendingApprovalFor`) 답은 어느 쪽이든 같다. 읽어 온 자리도 한
+   * 곳이다(auth/portal-delegations.ts, 같은 `liveNowParts`).
+   *
+   * 🔴 **여기서 무엇을 판정하는 것이 아니다.** 이 칸이 있어야 공용 조건이 「맡긴
+   * 사람의 단계도 이 사람 것이다」라고 답할 수 있을 뿐이다 — 얹지 않으면 포털
+   * 위임을 받은 대리인은 후보에 올라와도 **공용 조건이 한 명씩 다 걸러낸다.**
+   *
+   * 🔵 **없는 것(undefined)은 「위임 없음」이다** — `Decider` 의 같은 칸과 같은
+   * 약속이다. 위임이 하나도 없는 보통의 결재자는 이 칸 없이 그대로 지나간다.
+   */
+  actingForEmployeeIds?: readonly string[];
 };
+
+/**
+ * 「누가 누구를 대신할 수 있다」 한 줄. 🔴 **명단 번호 둘뿐이다** — 이름도
+ * 기간도 싣지 않는다.
+ *
+ * 🔴 **모양의 원본이 여기 있는 까닭**은 위 `ApprovalNudgeCandidate` 와 같다:
+ * 읽어 오는 쪽(auth/portal-delegations.ts 의 `loadDelegatesForApprovers`)이
+ * 이것을 `import type` 으로 빌려 쓴다. 반대로 하면 이 파일이 DB 를 끌어오게
+ * 되어 「DB 없이 그대로 돌려 볼 수 있다」는 성질이 깨진다(머리말).
+ */
+export type ActingForPair = {
+  /** 결재권을 맡긴 사람 — 지금 단계에 **박혀 있는** 결재자다. */
+  delegatorEmployeeId: string;
+  /** 대신 누를 수 있는 사람 — 알림이 함께 가야 하는 쪽이다. */
+  delegateEmployeeId: string;
+};
+
+/**
+ * 🔴 **대리인을 후보에 **더하는** 자리** (2026-11-17, 설계 D-8 ①).
+ *
+ * ── 무엇을 넓히고 무엇을 안 넓히나 ────────────────────────────────────────
+ * 넓어지는 것은 **사람**뿐이다. 🔴 **대상 단계는 한 줄도 안 넓어진다** — 어느
+ * 단계를 보는지는 조회 쪽(data.ts 의 `nudgeStepWhere`)이 정하고 이 함수는 그
+ * 결과만 받는다. `SKIPPED`·이미 끝난 단계가 여기로 흘러들 길이 아예 없다.
+ *
+ * 🔴 **같은 사람이 두 번 나오지 않는다.** 세 가지 겹침이 실제로 있다:
+ *  · 대리인이 **제 단계로도** 걸려 있다 (한 줄에 합치고 맡긴 사람만 보탠다).
+ *  · 한 사람이 **여럿을 대신한다** (한 줄에 번호 여럿이 실린다).
+ *  · 맡긴 사람과 대리인이 **같다** (포털이 자기 지정을 허용한다 — 합쳐지고
+ *    공용 조건 쪽에서 중복이 한 번 더 걷힌다).
+ * 두 줄로 내보내면 같은 사람에게 **메일이 두 번** 가고, 그것은 받는 사람 눈에
+ * 결함으로만 보인다.
+ *
+ * 🔵 **판정이 아니다.** 여기서 만든 줄은 한 명씩 공용 조건에 되묻는 길
+ * (`nudgeApprovalCreated` → `isPendingFor`)을 그대로 지난다 — 대리인도 예외가
+ * 아니다. 넓게 고르고 좁히는 것은 저쪽이라는 이 파일의 규칙 그대로다.
+ *
+ * @param onSteps 열린 단계에 걸린 사람들(조회가 일부러 넓게 고른 것).
+ * @param pairs   「이 결재자를 누가 대신하나」 — 살아 있는 위임만 들어 있다.
+ * @param delegates 대리인들의 직급·계정. 🔴 **이미 `onSteps` 에 있는 사람은 담지
+ *                  않아도 된다** — 그 줄을 그대로 쓴다.
+ */
+export function withDelegateCandidates(params: {
+  onSteps: readonly ApprovalNudgeCandidate[];
+  pairs: readonly ActingForPair[];
+  delegates: readonly ApprovalNudgeCandidate[];
+}): ApprovalNudgeCandidate[] {
+  const byEmployee = new Map<string, { row: ApprovalNudgeCandidate; acting: Set<string> }>();
+  // 🔵 차례를 Map 에 맡기지 않고 따로 적는다 — 단계에 걸린 사람이 먼저,
+  //    위임으로 더해진 사람이 뒤다. 「원래 가던 사람의 차례는 그대로」가 눈으로
+  //    보여야 이 조각이 무엇을 바꿨는지 읽힌다.
+  const order: string[] = [];
+  const remember = (row: ApprovalNudgeCandidate) => {
+    const seen = byEmployee.get(row.employeeId);
+    if (seen) return seen;
+    const fresh = { row, acting: new Set(row.actingForEmployeeIds ?? []) };
+    byEmployee.set(row.employeeId, fresh);
+    order.push(row.employeeId);
+    return fresh;
+  };
+
+  for (const row of params.onSteps) remember(row);
+
+  const delegateRows = new Map(params.delegates.map((row) => [row.employeeId, row]));
+  for (const pair of params.pairs) {
+    const row = byEmployee.get(pair.delegateEmployeeId)?.row ?? delegateRows.get(pair.delegateEmployeeId);
+    // 🔴 번호는 있는데 줄이 없으면 **넘긴다.** 명단에 없는 사람은 후보가 될 수
+    //    없고, 여기서 빈 줄을 지어내면 직급도 계정도 거짓이 된다. 표의 외래키가
+    //    맡긴 사람·대리인을 둘 다 명단에 묶어 두므로 실제로 생기지는 않는다.
+    if (!row) continue;
+    remember(row).acting.add(pair.delegatorEmployeeId);
+  }
+
+  return order.map((employeeId) => {
+    const { row, acting } = byEmployee.get(employeeId)!;
+    // 🔵 보탤 것이 없으면 받은 줄을 **그대로** 내보낸다 — 위임이 없는 날 이
+    //    함수를 지나기 전과 지난 뒤가 값까지 같아야, 「위임 때문에 달라진 것」만
+    //    눈에 남는다.
+    return acting.size === 0 ? row : { ...row, actingForEmployeeIds: [...acting] };
+  });
+}
 
 export type ApprovalNudgeDeps = {
   /** 이 신청의 열린 단계에 걸릴 수 있는 사람들(일부러 넓다). */
@@ -125,6 +234,12 @@ export async function nudgeApprovalCreated(
           employeeId: candidate.employeeId,
           rankId: candidate.rankId,
           isApprover: candidate.isApprover,
+          // 🔴 **그대로 얹는다**(2026-11-17, 설계 D-8 ①). 포털 위임으로 대신
+          //    누를 수 있는 사람들의 번호이고, 화면이 지나는 길에서는 같은 값을
+          //    data.ts 의 `deciderOf` 가 싣는다. 🔴 여기서 빠뜨리면 대리인이
+          //    후보에 올라와도 공용 조건이 **한 명도 빠짐없이 걸러내** 알림이
+          //    영영 안 간다 — 오류는 하나도 안 난다.
+          actingForEmployeeIds: candidate.actingForEmployeeIds,
         },
         requestId,
       );

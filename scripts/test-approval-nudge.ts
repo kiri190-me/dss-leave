@@ -532,14 +532,23 @@ async function main() {
   });
 
   await checkAsync(
-    "🔴 후보 조회가 **넓다** — 사람으로 박힌 단계와 옛 직급 단계 둘 다 긁고, 좁히지 않는다",
+    "🔴 단계 후보 조회가 **넓다** — 사람으로 박힌 단계와 옛 직급 단계 둘 다 긁고, 좁히지 않는다",
     async () => {
       // 🔴 data.ts 는 불러오는 것만으로 접속 풀을 만든다(db/index.ts) — 맨 위
       //    import 는 tsx 가 끌어올리므로 여기서 들여온다. **붙지는 않는다.**
-      const { approvalNudgeCandidates } = await import("../src/lib/leave/data");
+      //
+      // 🔵 **2026-11-17 에 이름이 갈라졌다**(설계 D-8 ①). 그전에는 이 질의가 곧
+      //    후보 전부였는데, 포털 위임을 받은 **대리인**이 여기 잡힐 길이 없어
+      //    (단계에는 맡긴 사람의 번호만 박혀 있다) 「결재가 생겼다」 알림만 못
+      //    받고 있었다. 지금 배선이 부르는 것은 둘을 합친
+      //    `approvalNudgeCandidates` 이고, 🔴 **이 검사가 보는 것은 그중 단계
+      //    쪽 절반**이다 — 대리인 절반은 scripts/test-approval-nudge-delegation.ts
+      //    가 잰다. 여기서 재는 「넓은가」는 그대로 살아 있어야 한다: 이 질의가
+      //    좁아지면 **원래 가던 알림**이 줄어든다.
+      const { approvalNudgeStepCandidatesQuery } = await import("../src/lib/leave/data");
       // 🔴 부르기만 하고 **기다리지 않는다.** drizzle 의 질의 만들개는 await
       //    하는 순간에야 DB 에 붙으므로, 여기서는 만들어진 SQL 만 읽는다.
-      const built = approvalNudgeCandidates(REQUEST_ID) as unknown as {
+      const built = approvalNudgeStepCandidatesQuery(REQUEST_ID) as unknown as {
         toSQL(): { sql: string; params: unknown[] };
       };
       const { sql, params } = built.toSQL();

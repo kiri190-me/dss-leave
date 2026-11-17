@@ -14,9 +14,15 @@
  * 「없어지는 것들」). 설계 B-6·B-7(못 물었을 때의 처신과 안내)도 같은 까닭으로
  * 이 집에서는 더 읽을 것이 없다.
  *
- * ── 🔴 이 파일에 있는 넷은 **쓰임이 다르다** ──────────────────────────────
+ * ── 🔴 이 파일에 있는 다섯은 **쓰임이 다르다** ────────────────────────────
  *  · 아래 `loadActingForEmployeeIds` — **판정이 읽는 쪽.** 「지금 내가 대신
  *    결재할 수 있는 사람들」을 결재 판정에 올린다. 돌려주는 것은 **번호뿐**이다.
+ *  · 🔴 `loadDelegatesForApprovers` — **알리는 쪽이 읽는다**(2026-11-17, 설계
+ *    D-8 ①). 위와 **방향이 반대**다: 「이 결재자들을 **누가** 대신할 수 있나」.
+ *    로그인한 사람이 제 권한을 묻는 자리가 아니라, **남 여럿**을 한꺼번에
+ *    되짚는 자리라 번호 목록을 받는다. 🔴 **살아 있는지 보는 조건은 위와 같은
+ *    자리를 쓴다**(`liveNowParts`) — 베껴 적으면 「결재함에는 뜨는데 알림은 안
+ *    오는」 사람이 생기고, 그 어긋남은 신고로만 드러난다.
  *  · 🔵 `loadDelegationsActingFor` · `loadDelegationsGivenBy` ·
  *    `loadAllUnfinishedDelegations` — **화면이 읽는 쪽**(2026-11-17, 조각 3c).
  *    사람에게 보여 줄 **이름과 기간**을 싣는다. 🔴 **판정에 쓰지 마라** —
@@ -46,6 +52,11 @@ import { alias } from "drizzle-orm/pg-core";
 
 import { db } from "@/lib/db";
 import { webEmployees, webPortalApprovalDelegations, webUsers } from "@/lib/db/schema";
+// 🔴 **모양의 원본은 DB 를 모르는 파일에 있다** — 아래 `DelegatedApproverRow` ·
+//    `DelegationAuditRow` 와 같은 자리다. 「누가 누구를 대신하나」 한 줄을
+//    여기서 다시 적으면 받는 쪽(leave/approval-nudge.ts 의 합치는 함수)과 두
+//    벌이 되고, 칸 하나가 어긋나도 tsc 가 침묵한다.
+import type { ActingForPair } from "@/lib/leave/approval-nudge";
 import {
   DELEGATION_LIST_LIMIT,
   type DelegationAuditRow,
@@ -79,9 +90,26 @@ import { isValidSubject } from "./sso-role";
 export function liveDelegationWhere(delegateEmployeeId: string, now: Date): SQL {
   return and(
     eq(webPortalApprovalDelegations.delegateEmployeeId, delegateEmployeeId),
-    unfinishedWhere(now),
-    lte(webPortalApprovalDelegations.startsAt, now),
+    ...liveNowParts(now),
   )!;
+}
+
+/**
+ * 🔴 **위 두 문단이 말하는 「살아 있음」 그 자체** — 사람 조건이 빠진 조각이다.
+ *
+ * 🔵 **왜 갈라 두었나**(2026-11-17, 설계 D-8 ①). 이 조건을 쓰는 자리가 둘이
+ * 됐다: 「내가 누구를 대신하나」(위, 판정이 읽는다)와 「이 사람들을 누가
+ * 대신하나」(아래, 알리는 쪽이 읽는다). **사람을 고르는 줄만 다르고 살아 있는지
+ * 보는 줄은 똑같아야 한다** — 한쪽에 베껴 적으면 「결재함에는 떴는데 알림은 안
+ * 오는」(또는 그 반대) 사람이 생기는데, 그 어긋남은 아무 오류도 내지 않고
+ * **신고로만** 드러난다.
+ *
+ * 🔴 **목록으로 돌려주고 부르는 쪽이 펼친다.** `and(...)` 로 한 번 더 묶어
+ * 돌려주면 괄호가 한 겹 더 생겨 **구워진 SQL 의 글자가 달라지고**, 이 파일의
+ * 조건을 글자로 맞대어 보는 검사들이 그 자리에서 거짓말을 하기 시작한다.
+ */
+function liveNowParts(now: Date): SQL[] {
+  return [unfinishedWhere(now), lte(webPortalApprovalDelegations.startsAt, now)];
 }
 
 /**
@@ -156,6 +184,94 @@ export async function loadActingForEmployeeIds(
 ): Promise<string[]> {
   const rows = await actingForEmployeeIdsQuery(delegateEmployeeId, now);
   return rows.map((row) => row.delegatorEmployeeId);
+}
+
+/* ------------------------------------------------------------------ */
+/* 🔴 거꾸로 — 「이 결재자들을 **누가** 대신할 수 있나」 (2026-11-17, D-8 ①)*/
+/* ------------------------------------------------------------------ */
+
+/**
+ * 🔴 **방향이 위와 반대다.** 위는 로그인한 사람이 「내가 누구를 대신하나」를
+ * 묻고, 여기는 결재자 번호 여럿을 주고 「이 사람들을 **누가** 대신하나」를
+ * 묻는다. 🔴 **둘을 바꿔 꽂으면 오류 없이 아무도 못 얻는다** — 열이 둘 다
+ * uuid 라 타입도 맞고, 답만 빈 목록이 된다.
+ *
+ * 🔵 **왜 이 방향이 필요했나.** 결재가 생겼을 때 알릴 사람을 뽑는 자리
+ * (leave/data.ts 의 `approvalNudgeCandidates`)는 **지금 로그인한 사람이 없다** —
+ * 커밋이 끝난 뒤 서버가 혼자 도는 길이다. 그래서 「이 단계의 주인을 지금 대신할
+ * 수 있는 사람」을 **주인 쪽에서** 되짚어야 한다. 그 길이 없던 동안 포털 위임을
+ * 받은 대리인은 결재함·배지·종에는 뜨는데 **「결재가 생겼다」 알림만** 못 받았다
+ * (설계 D-8 ①).
+ *
+ * 🔴 **살아 있는지 보는 줄을 다시 적지 않는다** — 정방향과 같은 `liveNowParts`
+ * 다. 여기서 베껴 적으면 두 벌이 되고, 거둔 위임인데 알림만 가는 날이 온다.
+ *
+ * 🔴 **이어 붙지 않는다.** 고르는 줄은 `delegator_employee_id in (…)` 하나뿐이라
+ * 한 걸음만 간다 — A→B, B→C 일 때 A 의 단계로 C 를 부르지 않는다. 결재 판정이
+ * 같은 까닭으로 이어 붙지 않으므로(approval-scope.ts 의 `approvableEmployeeIds`),
+ * 여기서 이어 붙이면 **알림만 가고 눌러 보면 거절되는** 사람이 생긴다.
+ *
+ * 🔵 맡긴 사람 번호를 **함께** 돌려주는 까닭: 받는 쪽이 그것을 대리인의
+ * 「내가 대신할 수 있는 사람들」 목록으로 싣고, 그 목록이 그대로 **공용 조건**
+ * 에 올라간다(leave/approval-scope.ts 의 `myStepCondition`). 대리인 번호만
+ * 돌려주면 받는 쪽이 「누구를 대신해서 걸렸는가」를 다시 알아내야 하고, 그
+ * 순간 판정이 두 벌이 된다.
+ *
+ * 🔴 **질의를 만들기만 하고 돌리지 않는다** — 이 파일의 다른 자리와 같다.
+ */
+export function delegatesForApproversQuery(
+  delegatorEmployeeIds: readonly string[],
+  now: Date,
+) {
+  return db
+    .selectDistinct({
+      delegatorEmployeeId: webPortalApprovalDelegations.delegatorEmployeeId,
+      delegateEmployeeId: webPortalApprovalDelegations.delegateEmployeeId,
+    })
+    .from(webPortalApprovalDelegations)
+    .where(
+      and(
+        inArray(webPortalApprovalDelegations.delegatorEmployeeId, [...delegatorEmployeeIds]),
+        ...liveNowParts(now),
+      )!,
+    )
+    // 🔵 차례를 못 박는다 — 알림 대상의 차례가 호출마다 달라지면 시험이 흔들리고,
+    //    「누가 빠졌나」를 로그로 맞대어 볼 때도 줄이 춤춘다.
+    .orderBy(
+      webPortalApprovalDelegations.delegateEmployeeId,
+      webPortalApprovalDelegations.delegatorEmployeeId,
+    );
+}
+
+/**
+ * 🔴 **알리는 쪽의 입구.** 부르는 곳은 leave/data.ts 의 `approvalNudgeCandidates`
+ * 하나다.
+ *
+ * 🔴 **빈 목록이면 DB 를 두드리지 않는다.** 사람으로 박힌 결재자가 없는 신청
+ * (옛 직급 단계뿐이거나 열린 단계가 아예 없는 자리 — 반려·확정 뒤가 그렇다)이
+ * 흔하고, 그 자리마다 왕복을 한 번씩 더 하면 **결재가 생길 때마다** 쓸데없는
+ * 조회가 는다. drizzle 의 `inArray` 는 빈 목록을 `false` 로 굽기 때문에 돌려도
+ * 답은 같다 — 아끼는 것은 왕복이지 정확함이 아니다.
+ *
+ * 🔴 **던지는 것을 삼키지 않는다** — 위 정방향과 같다. 여기서 빈 목록으로 바꿔
+ * 돌려주면 **위임받은 사람에게만 조용히 알림이 안 가는** 상태가 되고, 그것이 이
+ * 저장소들에서 가장 비싼 결함 모양이다. 삼키는 자리는 한 곳뿐이고
+ * (leave/approval-nudge.ts — 신청은 이미 저장됐으니 알림이 늦어도 막지 않는다),
+ * 거기서는 **까닭을 로그에 남긴다.**
+ *
+ * @param delegatorEmployeeIds 결재자들의 **명단 번호**(`web_employees.id`).
+ *                             🔴 계정 번호도 포털 번호도 아니다 — 넣으면 오류
+ *                             없이 영원히 빈 목록이 나온다.
+ * @param now 판정 기준 시각. 기본은 **지금**이고 부르는 쪽이 요청마다 새로
+ *            찍는다(위 `liveDelegationWhere` 의 그 까닭 — 캐 두면 끝난 위임이
+ *            계속 열려 있다).
+ */
+export async function loadDelegatesForApprovers(
+  delegatorEmployeeIds: readonly string[],
+  now: Date = new Date(),
+): Promise<ActingForPair[]> {
+  if (delegatorEmployeeIds.length === 0) return [];
+  return delegatesForApproversQuery(delegatorEmployeeIds, now);
 }
 
 /* ------------------------------------------------------------------ */
