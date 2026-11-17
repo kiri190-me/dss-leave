@@ -25,6 +25,7 @@
     "test:nudge": "tsx scripts/test-approval-nudge.ts",
     "test:delegation": "tsx scripts/test-approval-delegation.ts",
     "test:delegation-sync": "tsx scripts/test-delegation-sync.ts",
+    "test:delegation-list": "tsx scripts/test-delegation-list.ts",
     "test:delegation-screen": "tsx scripts/test-delegation-screen.ts",
     "test:approval-history": "tsx scripts/test-approval-history.ts",
     "test:approval-history-api": "tsx scripts/test-approval-history-api.ts",

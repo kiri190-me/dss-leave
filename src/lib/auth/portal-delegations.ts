@@ -14,13 +14,17 @@
  * 「없어지는 것들」). 설계 B-6·B-7(못 물었을 때의 처신과 안내)도 같은 까닭으로
  * 이 집에서는 더 읽을 것이 없다.
  *
- * ── 🔴 이 파일에 있는 셋은 **쓰임이 다르다** ──────────────────────────────
+ * ── 🔴 이 파일에 있는 넷은 **쓰임이 다르다** ──────────────────────────────
  *  · 아래 `loadActingForEmployeeIds` — **판정이 읽는 쪽.** 「지금 내가 대신
  *    결재할 수 있는 사람들」을 결재 판정에 올린다. 돌려주는 것은 **번호뿐**이다.
  *  · 🔵 `loadDelegationsActingFor` · `loadDelegationsGivenBy` ·
  *    `loadAllUnfinishedDelegations` — **화면이 읽는 쪽**(2026-11-17, 조각 3c).
  *    사람에게 보여 줄 **이름과 기간**을 싣는다. 🔴 **판정에 쓰지 마라** —
  *    아직 시작 전인 줄까지 싣기 때문이다(아래 그 절 머리말).
+ *  · 🔴 `loadDelegationsForAudit` — **포털의 어긋남 점검이 읽는 쪽**(2026-11-17,
+ *    조각 9a · 설계 B-14). 🔴 **거르개가 하나도 없다** — 철회된 줄까지 **전부**
+ *    준다. 위 화면용 조회로 대신할 수 없는 까닭이 바로 그것이고, 대신 **사람
+ *    칸을 한 개도 안 읽는다.**
  *  · 🔴 `findEmployeeIdsBySubjects` — **받는 쪽**(조각 6)이 쓴다. 포털이 보낸
  *    `sub` 를 이 집 명단 번호로 바꾸는 자리이고, 부르는 곳은
  *    `app/api/integration/delegations/route.ts` 하나다. 🔴 **지우지 마라** —
@@ -42,6 +46,10 @@ import { alias } from "drizzle-orm/pg-core";
 
 import { db } from "@/lib/db";
 import { webEmployees, webPortalApprovalDelegations, webUsers } from "@/lib/db/schema";
+import {
+  DELEGATION_LIST_LIMIT,
+  type DelegationAuditRow,
+} from "@/lib/leave/portal-delegation-list";
 import type { DelegatedApproverRow } from "@/lib/leave/portal-delegation-sync";
 import { isValidSubject } from "./sso-role";
 
@@ -263,6 +271,59 @@ export async function loadAllUnfinishedDelegations(opts: {
 }): Promise<PortalDelegationView[] | null> {
   if (!opts.isAdmin) return null;
   return allUnfinishedDelegationsQuery(opts.now ?? new Date());
+}
+
+/* ------------------------------------------------------------------ */
+/* 🔴 포털의 어긋남 점검이 읽는다 — **거르개가 없는** 자리 (조각 9a)      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 「이 집이 지금 가진 위임 전부」. 🔴 **where 가 한 줄도 없는 것이 이 조회의
+ * 전부다.** 살아 있는 것·끝난 것·**거둔 것**을 다 준다 — 포털과 맞대어 볼 때
+ * 「포털은 거뒀는데 집에서는 살아 있는」 줄이 가장 위험한 어긋남인데(설계 B-13),
+ * 거른 목록으로는 그 줄이 **양쪽에서 똑같이 안 보인다.**
+ *
+ * 🔴 **사람 칸을 안 고른다.** 고른 뒤에 안 싣는 것이 아니라 아예 안 읽는다 —
+ * 몸통을 짓는 자리(leave/portal-delegation-list.ts)와 **두 겹**으로 막아 둔 것은,
+ * 한 겹만 있으면 다음 사람이 「조회는 다 읽어 두고 고를 때 가리자」로 쉽게
+ * 무너뜨리기 때문이다.
+ *
+ * 🔴 **차례를 못 박는다**(번호 오름차순). 상한에 걸려 잘릴 때 **어느 줄이 잘리는가**가
+ * 호출마다 달라지면, 점검이 돌 때마다 다른 줄을 「집에 없다」로 읽는다.
+ *
+ * 🔴 **상한보다 한 줄 더 읽는다**(`limit + 1`). 그 한 줄이 「넘쳤다」를 가리는 유일한
+ * 길이고, 딱 상한만큼 읽으면 **정확히 상한만큼 있는 날**과 **넘친 날**이 같은 답이
+ * 된다. 세어서 잘라내는 것은 몸통을 짓는 쪽이다(`buildDelegationListReply`) —
+ * 🔴 **그러니 이 함수가 돌려주는 줄 수를 그대로 내보내면 안 된다.**
+ *
+ * 🔴 **질의를 만들기만 하고 돌리지 않는다** — 이 파일의 다른 자리와 같다. 시험이
+ * `.toSQL()` 로 구워 「사람 칸을 안 고르는가」·「거르개가 없는가」·「한 줄 더 묻는가」를
+ * 글자가 아니라 **구워진 SQL** 로 본다.
+ */
+export function delegationsForAuditQuery(limit: number = DELEGATION_LIST_LIMIT) {
+  return db
+    .select({
+      id: webPortalApprovalDelegations.id,
+      startsAt: webPortalApprovalDelegations.startsAt,
+      endsAt: webPortalApprovalDelegations.endsAt,
+      revokedAt: webPortalApprovalDelegations.revokedAt,
+    })
+    .from(webPortalApprovalDelegations)
+    .orderBy(asc(webPortalApprovalDelegations.id))
+    .limit(limit + 1);
+}
+
+/**
+ * 🔴 **읽기 갈래의 입구.** 부르는 곳은 `api/integration/delegations` 하나다.
+ *
+ * 🔴 **던지는 것을 삼키지 않는다** — 못 읽은 것을 빈 목록으로 답하면 점검이 그것을
+ * 「이 집에 위임이 하나도 없다」로 읽고, **DB 가 앓는 날 모든 위임이 어긋난 것으로
+ * 보고된다.** 통로가 500 으로 답한다.
+ */
+export async function loadDelegationsForAudit(
+  limit: number = DELEGATION_LIST_LIMIT,
+): Promise<DelegationAuditRow[]> {
+  return delegationsForAuditQuery(limit);
 }
 
 /* ------------------------------------------------------------------ */
