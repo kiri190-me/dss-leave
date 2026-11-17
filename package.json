@@ -27,6 +27,7 @@
     "test:delegation-sync": "tsx scripts/test-delegation-sync.ts",
     "test:delegation-screen": "tsx scripts/test-delegation-screen.ts",
     "test:approval-history": "tsx scripts/test-approval-history.ts",
+    "test:approval-history-api": "tsx scripts/test-approval-history-api.ts",
     "test:calendar": "tsx scripts/test-calendar-width.ts",
     "test:leave": "tsx scripts/test-leave-rules.ts",
     "test:workflow": "tsx scripts/test-workflow.ts"
