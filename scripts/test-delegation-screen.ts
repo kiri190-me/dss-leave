@@ -120,6 +120,9 @@ function row(over: Partial<DelegationRow> = {}): DelegationRow {
     // 11월 17일 09:00 KST ~ 11월 24일 18:00 KST
     startsAt: new Date("2026-11-17T00:00:00.000Z"),
     endsAt: new Date("2026-11-24T09:00:00.000Z"),
+    // 🔵 2026-11-17 에 칸이 하나 늘었다(접기). 이 검사가 보는 줄은 전부 **안 거둔
+    //    줄**이다 — 거둔 줄·끝난 줄의 글자는 scripts/test-delegation-fold.ts 가 본다.
+    revokedAt: null,
     reason: "",
     ...over,
   };
@@ -339,10 +342,14 @@ async function main() {
 
   check("🔴 진행 중·시작 전을 **판정과 같은 금**으로 가른다", () => {
     const 시작 = new Date("2026-11-17T00:00:00.000Z");
-    assert.equal(delegationPhase({ startsAt: 시작 }, new Date(시작.getTime() - 1)), "UPCOMING");
+    // 🔵 2026-11-17 에 판정이 줄 전체를 보게 됐다(접기 — 끝난 줄이 처음으로 화면에
+    //    온다). 🔴 **끝은 넉넉히 뒤로 둔다** — 안 그러면 여기 네 경우가 전부 「만료」로
+    //    떨어져, 「시작하는 그 순간」을 재려던 이 검사가 **아무것도 못 재면서 통과**한다.
+    const 안끝남 = { endsAt: new Date("2027-01-01T00:00:00.000Z"), revokedAt: null };
+    assert.equal(delegationPhase({ startsAt: 시작, ...안끝남 }, new Date(시작.getTime() - 1)), "UPCOMING");
     // 🔴 시작하는 그 순간은 **진행 중**이다(판정의 `starts_at <= 지금`과 같은 말).
-    assert.equal(delegationPhase({ startsAt: 시작 }, 시작), "ACTIVE");
-    assert.equal(delegationPhase({ startsAt: 시작 }, new Date(시작.getTime() + 1)), "ACTIVE");
+    assert.equal(delegationPhase({ startsAt: 시작, ...안끝남 }, 시작), "ACTIVE");
+    assert.equal(delegationPhase({ startsAt: 시작, ...안끝남 }, new Date(시작.getTime() + 1)), "ACTIVE");
     assert.equal(DELEGATION_PHASE_LABEL.ACTIVE, "진행 중");
     assert.equal(DELEGATION_PHASE_LABEL.UPCOMING, "시작 전");
   });
@@ -479,8 +486,13 @@ async function main() {
   check("🔴 **비었을 때 할 말**이 있다 — 빈 자리는 고장으로 읽힌다", () => {
     assert.ok(DELEGATION_EMPTY_NOTE.includes("통합 승인함"));
     assert.ok(notice.includes("DELEGATION_EMPTY_NOTE"), "묶음에 기본 빈 글자가 없다");
-    // 세 묶음 모두 제 사정에 맞는 글을 넘긴다.
-    assert.equal((settings.match(/empty="/g) ?? []).length, 3);
+    // 세 묶음 모두 제 사정에 맞는 글을 넘긴다. 🔵 2026-11-17 부터 그중 둘은 **글자가
+    // 아니라 함수**로 넘어간다 — 바로 아래 접혀 있는 끝난 줄의 수에 따라 말이 갈려야
+    // 해서다(delegation-view.ts 의 `delegationGroupEmptyNote`). 🔴 세는 자리를
+    // `empty="` 로 두면 그 둘이 **조용히 빠져**, 빈 묶음에 아무 말도 없는 화면이
+    // 그대로 통과한다.
+    assert.equal((settings.match(/empty=[{"]/g) ?? []).length, 3);
+    assert.equal((settings.match(/empty=\{delegationGroupEmptyNote\(/g) ?? []).length, 2);
   });
 
   /* ---------------------------------------------------------------- */

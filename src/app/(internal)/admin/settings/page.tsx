@@ -13,10 +13,11 @@ import { ActionForm } from "@/components/ActionForm";
 import { ApprovalRouteCard } from "@/components/ApprovalRouteCard";
 import { DelegationGroup, DelegationSourceNote } from "@/components/DelegationNotice";
 import { requireAdmin, requireViewer, type Viewer } from "@/lib/auth/guards";
+import type { PortalDelegationView } from "@/lib/auth/portal-delegations";
 import {
   loadAllUnfinishedDelegations,
-  loadDelegationsActingFor,
-  loadDelegationsGivenBy,
+  loadDelegationFoldActingFor,
+  loadDelegationFoldGivenBy,
 } from "@/lib/auth/portal-delegations";
 import { formatDay, todayKst, yearOf } from "@/lib/dates";
 import { db } from "@/lib/db";
@@ -29,6 +30,7 @@ import {
   loadRanks,
   loadRouteCandidates,
 } from "@/lib/leave/data";
+import { delegationGroupEmptyNote, emptyDelegationFold } from "@/lib/leave/delegation-view";
 import {
   SETTINGS_TAB_LABEL,
   SETTINGS_TAB_PARAM,
@@ -96,13 +98,20 @@ function SettingsTabs({ tab, isAdmin }: { tab: SettingsTab; isAdmin: boolean }) 
  * 읽히므로 그 사실을 따로 적는다.
  */
 async function DelegationTab({ viewer }: { viewer: Viewer }) {
-  // 🔵 한 번 찍어 **세 조회와 모든 문장이 같은 순간**을 본다. 따로 찍으면 「진행
-  //    중」과 「시작 전」이 같은 화면 안에서 갈릴 수 있다.
+  // 🔵 한 번 찍어 **모든 조회와 모든 문장이 같은 순간**을 본다. 따로 찍으면 「진행
+  //    중」과 「시작 전」이 같은 화면 안에서 갈릴 수 있고, 접기가 생긴 뒤로는
+  //    **같은 줄이 펴진 쪽과 접힌 쪽에 동시에 뜨거나 양쪽에서 빠질 수도** 있다.
   const now = new Date();
   const employeeId = viewer.employee?.id ?? null;
   const [received, given, all] = await Promise.all([
-    employeeId ? loadDelegationsActingFor(employeeId, now) : [],
-    employeeId ? loadDelegationsGivenBy(employeeId, now) : [],
+    // 🔵 **끝난 줄까지 함께 온다**(2026-11-17). 펴 둘 줄은 `.live`, 접을 줄은
+    //    `.finished` 다 — 가르는 일도 상한도 조회가 한다(그 함수 머리말).
+    employeeId
+      ? loadDelegationFoldActingFor(employeeId, now)
+      : emptyDelegationFold<PortalDelegationView>(),
+    employeeId
+      ? loadDelegationFoldGivenBy(employeeId, now)
+      : emptyDelegationFold<PortalDelegationView>(),
     // 🔴 권한은 **조회 함수 자신이** 묻는다 — 관리자가 아니면 null 이고 DB 에
     //    묻지도 않는다(화면에서 가리는 것으로는 아무것도 못 막는다).
     loadAllUnfinishedDelegations({ isAdmin: viewer.isAdmin, now }),
@@ -113,10 +122,15 @@ async function DelegationTab({ viewer }: { viewer: Viewer }) {
       <SettingsTabs tab="delegation" isAdmin={viewer.isAdmin} />
 
       <section className="rounded-lg border border-slate-200 bg-white p-4">
+        {/* 🔴 2026-11-17 까지 여기 「끝났거나 거둬들인 위임은 이 목록에서 사라집니다」
+            라고 적혀 있었다. 접기가 생긴 날 그 글이 **거짓말**이 됐다 — 끝난 위임은
+            이제 사라지지 않고 아래 접기 안으로 들어간다. 🔵 결재함 맨 위 안내에서는
+            여전히 사라지므로, 어디서 사라지는지를 **자리까지 적는다.** */}
         <p className="text-sm text-slate-600">
           통합 승인함에서 맡긴 결재권은 <b>이 시스템에도 그대로 적용됩니다.</b> 기간이 시작되면 맡긴 사람
           차례의 휴가 결재가 <b>대리인의 결재함에 함께</b> 뜨고, 기간이 끝나면 저절로 닫힙니다.
-          끝났거나 거둬들인 위임은 이 목록에서 사라집니다.
+          끝났거나 거둬들인 위임은 <b>결재함 안내에서는 사라지고</b>, 이 화면에서는 아래 [끝난 위임 보기]
+          안에 접혀 있습니다.
         </p>
         <DelegationSourceNote approvalsUrl={env.approvalsBaseUrl} className="mt-2" />
       </section>
@@ -128,19 +142,26 @@ async function DelegationTab({ viewer }: { viewer: Viewer }) {
         </p>
       )}
 
+      {/* 🔴 **접기는 묶음마다 하나씩이다** — 한쪽을 펴도 다른 쪽은 접힌 채로 남는다
+          (`<details>` 라 상태를 나눠 쓸 일이 아예 없다).
+          🔴 빈 글자가 **접힌 줄의 수로 갈린다**: 끝난 줄이 바로 아래 접혀 있는
+          사람에게 「없습니다」만 적으면 거짓말이고, 그 글을 믿으면 접기를 열어 볼
+          생각을 못 한다(`delegationGroupEmptyNote`). */}
       <DelegationGroup
         title="내가 대신하고 있는 것"
         side="RECEIVED"
-        rows={received}
+        rows={received.live}
+        fold={received}
         now={now}
-        empty="지금 대신하고 있는 결재권이 없습니다. 통합 승인함에서 누군가 나에게 맡기면 여기에 뜹니다."
+        empty={delegationGroupEmptyNote("RECEIVED", received.finished.length)}
       />
       <DelegationGroup
         title="내가 맡긴 것"
         side="GIVEN"
-        rows={given}
+        rows={given.live}
+        fold={given}
         now={now}
-        empty="내가 맡긴 결재권이 없습니다. 통합 승인함에서 맡기면 여기에 뜹니다."
+        empty={delegationGroupEmptyNote("GIVEN", given.finished.length)}
       />
       {/* 🔴 자료가 없으면(관리자가 아니면) 묶음 자체가 없다 — 감추는 것이 아니다. */}
       {all && (

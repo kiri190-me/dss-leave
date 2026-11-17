@@ -28,6 +28,7 @@
     "test:delegation-sync": "tsx scripts/test-delegation-sync.ts",
     "test:delegation-list": "tsx scripts/test-delegation-list.ts",
     "test:delegation-screen": "tsx scripts/test-delegation-screen.ts",
+    "test:delegation-fold": "tsx scripts/test-delegation-fold.ts",
     "test:delegated-role": "tsx scripts/test-delegated-role.ts",
     "test:approval-history": "tsx scripts/test-approval-history.ts",
     "test:approval-history-api": "tsx scripts/test-approval-history-api.ts",

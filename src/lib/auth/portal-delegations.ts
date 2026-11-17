@@ -32,6 +32,12 @@
  *    `loadAllUnfinishedDelegations` — **화면이 읽는 쪽**(2026-11-17, 조각 3c).
  *    사람에게 보여 줄 **이름과 기간**을 싣는다. 🔴 **판정에 쓰지 마라** —
  *    아직 시작 전인 줄까지 싣기 때문이다(아래 그 절 머리말).
+ *  · 🔵 `loadDelegationFoldActingFor` · `loadDelegationFoldGivenBy` — **같은 화면의
+ *    접기**(2026-11-17, 설계 C-5). 바로 위 둘이 고른 **펴 둘 줄**에 **끝난 줄**을
+ *    함께 싣는다. 🔴 **끝난 줄을 이 집에서 볼 수 있는 자리는 여기뿐이다** — 그
+ *    전에는 화면용 조회가 끝난 줄을 아예 안 읽어서, 기간이 지나면 그 위임을 다시
+ *    볼 길이 한 군데도 없었다. 부르는 곳은 [휴가 설정 → 결재권 위임] 탭 하나다
+ *    (결재함 안내는 바로 위 둘을 그대로 쓴다).
  *  · 🔴 `loadDelegationsForAudit` — **포털의 어긋남 점검이 읽는 쪽**(2026-11-17,
  *    조각 9a · 설계 B-14). 🔴 **거르개가 하나도 없다** — 철회된 줄까지 **전부**
  *    준다. 위 화면용 조회로 대신할 수 없는 까닭이 바로 그것이고, 대신 **사람
@@ -52,7 +58,7 @@
  * 쪽은 **명단 번호 하나로** 묻고 답도 명단 번호로 나간다.
  * ============================================================================
  */
-import { and, asc, eq, gt, inArray, isNull, lte, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, or, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 
 import { db } from "@/lib/db";
@@ -67,6 +73,14 @@ import {
 //    여기서 다시 적으면 받는 쪽(leave/approval-nudge.ts 의 합치는 함수)과 두
 //    벌이 되고, 칸 하나가 어긋나도 tsc 가 침묵한다.
 import type { ActingForPair } from "@/lib/leave/approval-nudge";
+// 🔵 접는 셈과 상한은 **DB 를 모르는 파일**에 있다(2026-11-17, 접기). 이 파일에 두면
+//    「넘쳤다고 말하는가」를 재려면 DB 에 51줄을 넣어야 하는데 이 집 시험은 DB 에
+//    닿지 않는다 — 그 까닭이 거기 `DELEGATION_FINISHED_LIMIT` 머리말에 적혀 있다.
+import {
+  DELEGATION_FINISHED_LIMIT,
+  foldFinishedDelegations,
+  type DelegationFoldView,
+} from "@/lib/leave/delegation-view";
 import {
   DELEGATION_LIST_LIMIT,
   type DelegationAuditRow,
@@ -136,13 +150,41 @@ function liveNowParts(now: Date): SQL[] {
  * 사용자가 「위임되었다는 내용이 안 뜬다」고 한 바로 그 자리다). 그래서 화면은
  * 시작 전 줄도 싣고 **「시작 전」이라고 적는다**(leave/delegation-view.ts).
  *
- * 🔴 **끝난 줄과 거둔 줄은 양쪽 다 안 보인다** — 「위임이 끝나면 안내도 사라진다」가
- * 이 한 줄에 달려 있다. 끝난 위임을 보여 주는 화면은 설계 C-5 의 다음 조각이다.
+ * 🔴 **끝난 줄과 거둔 줄은 양쪽 다 안 보인다** — 「위임이 끝나면 **결재함 안내가**
+ * 사라진다」가 이 한 줄에 달려 있다.
+ * 🔵 **2026-11-17: [휴가 설정 → 결재권 위임] 탭에서는 더 이상 사라지지 않는다**
+ * (설계 C-5 의 그 조각이 이것이다). 그 화면은 이 조건으로 고른 줄을 **펴 두고**,
+ * 아래 `finishedWhere` 로 고른 줄을 **접어서** 함께 보여 준다. 🔴 결재함 안내
+ * (`DelegationNotice`)는 **그대로** 이 조건만 쓴다 — 끝난 위임까지 늘 떠 있으면
+ * 아무도 안 읽게 되고, 정작 위임이 걸린 날에도 눈에 안 들어온다.
  */
 function unfinishedWhere(now: Date): SQL {
   return and(
     isNull(webPortalApprovalDelegations.revokedAt),
     gt(webPortalApprovalDelegations.endsAt, now),
+  )!;
+}
+
+/**
+ * 🔴 **바로 위의 여집합이다 — 새 규칙이 아니다**(2026-11-17, 접기).
+ *
+ *     안 끝남: revoked_at is null  AND  ends_at >  지금
+ *     끝남:    revoked_at is not null OR ends_at <= 지금      ← 여기
+ *
+ * 🔴 **두 조건을 합치면 모든 줄이고, 겹치는 줄은 없다.** 그래야 한 줄이 양쪽에 다
+ * 뜨거나(같은 위임이 펴진 채로도 접힌 채로도 보인다) 어느 쪽에도 안 뜨는(만료된
+ * 순간 영영 사라지는) 일이 없다. 🔴 **「끝났나」를 새로 적지 마라** — `is null` 을
+ * `is not null` 로, `>` 를 `<=` 로, `and` 를 `or` 로 **그대로 뒤집은 것**이고 그
+ * 셋 중 하나만 어긋나도 아무 오류 없이 줄이 샌다.
+ *
+ * 🔵 화면이 그리는 딱지도 같은 금으로 갈린다(leave/delegation-view.ts 의
+ * `delegationPhase` — ①②가 이 조건, ③④가 위 조건). 시험이 두 벌을 일곱 경우로
+ * 맞대어 본다(scripts/test-delegation-fold.ts).
+ */
+function finishedWhere(now: Date): SQL {
+  return or(
+    isNotNull(webPortalApprovalDelegations.revokedAt),
+    lte(webPortalApprovalDelegations.endsAt, now),
   )!;
 }
 
@@ -387,6 +429,14 @@ export type PortalDelegationView = {
   delegateName: string;
   startsAt: Date;
   endsAt: Date;
+  /**
+   * 🔴 **거둬들인 때. 비어 있으면 안 거둔 줄이다**(2026-11-17 에 더했다). 접기 안의
+   * 줄에 「만료」와 「철회됨」을 가려 적으려면 이 칸이 있어야 한다 — 없으면 둘을
+   * 한 글자로 뭉개게 되고, 사람이 접기를 여는 까닭이 바로 그 둘의 차이다.
+   * 🔵 펴 둔 쪽에서는 **언제나 null** 이다(`unfinishedWhere` 가 거른다). 그래도
+   * 같은 조회가 싣는 것은 고르는 칸이 묶음마다 갈리면 모양이 두 벌이 되어서다.
+   */
+  revokedAt: Date | null;
   /** 맡긴 까닭. 없으면 빈 글자다(통로 규약) */
   reason: string;
 };
@@ -404,10 +454,9 @@ export type PortalDelegationView = {
  * 🔵 질의를 **만들기만** 하는 함수를 따로 두는 것은 이 파일의 다른 자리와 같은
  * 까닭이다 — 시험이 `.toSQL()` 로 구워 조건을 글자가 아니라 **구워진 SQL** 로 본다.
  */
-function delegationViewQuery(who: SQL | undefined, now: Date) {
+function delegationViewBase() {
   const delegator = alias(webEmployees, "delegator");
   const delegate = alias(webEmployees, "delegate");
-  const unfinished = unfinishedWhere(now);
   return db
     .select({
       id: webPortalApprovalDelegations.id,
@@ -415,14 +464,54 @@ function delegationViewQuery(who: SQL | undefined, now: Date) {
       delegateName: delegate.name,
       startsAt: webPortalApprovalDelegations.startsAt,
       endsAt: webPortalApprovalDelegations.endsAt,
+      revokedAt: webPortalApprovalDelegations.revokedAt,
       reason: webPortalApprovalDelegations.reason,
     })
     .from(webPortalApprovalDelegations)
     .innerJoin(delegator, eq(delegator.id, webPortalApprovalDelegations.delegatorEmployeeId))
-    .innerJoin(delegate, eq(delegate.id, webPortalApprovalDelegations.delegateEmployeeId))
+    .innerJoin(delegate, eq(delegate.id, webPortalApprovalDelegations.delegateEmployeeId));
+}
+
+function delegationViewQuery(who: SQL | undefined, now: Date) {
+  const unfinished = unfinishedWhere(now);
+  return delegationViewBase()
     .where(who ? and(who, unfinished)! : unfinished)
     // 먼저 시작한 것이 위다 — 진행 중인 줄이 시작 전 줄보다 앞에 선다.
     .orderBy(asc(webPortalApprovalDelegations.startsAt));
+}
+
+/**
+ * 접기 **안**에 들어갈 줄 — 끝났거나 거둬들인 것 (2026-11-17).
+ *
+ * 🔴 **고르는 칸도 조인도 펴 둔 쪽과 같은 함수**(`delegationViewBase`)를 쓴다. 접힌
+ * 안의 줄을 **펴 둔 쪽과 똑같이 그린다**는 것이 이 조각의 약속이라, 싣는 칸이 갈리면
+ * 그 약속이 조회에서부터 깨진다.
+ *
+ * 🔴 **차례가 거꾸로다 — 최근 것부터.** 펴 둔 쪽은 먼저 시작한 것이 위인데(지금
+ * 걸려 있는 것을 시간 순으로 훑는 목록이다), 끝난 쪽에서 사람이 찾는 것은 **방금
+ * 끝난 줄**이다. 🔵 거둬들인 줄은 「거둔 때」가 아니라 **원래 끝나기로 한 때**로
+ * 선다 — 정렬에 쓰는 칸이 하나여야 색인을 타고, 어느 쪽인지는 딱지가 말해 준다.
+ * 🔵 `starts_at` 을 뒤에 붙이는 것은 끝이 같은 줄들의 차례를 못 박으려는 것이다.
+ * 차례가 호출마다 흔들리면 상한에 걸려 **잘리는 줄이 새로고침마다 달라진다.**
+ *
+ * 🔴 **상한보다 한 줄 더 읽는다**(`limit + 1`). 그 한 줄이 「넘쳤다」를 가리는 유일한
+ * 길이고, 딱 상한만큼 읽으면 **정확히 상한만큼 있는 날**과 **넘친 날**이 같은 답이
+ * 된다. 세어서 잘라내는 것은 순수 함수 쪽이다(`foldFinishedDelegations`) — 이 함수가
+ * 돌려주는 줄 수를 그대로 화면에 세면 안 된다.
+ *
+ * 🔴 **사람 조건을 `undefined` 로 열어 두지 않았다**(위 `delegationViewQuery` 와 다른
+ * 점이다). 끝난 줄은 해가 갈수록 쌓이기만 하는 집합이라 「모두의 끝난 위임」은 **상한의
+ * 뜻이 달라진다** — 그 화면은 이 조각의 범위 밖이고, 열려 있으면 다음 사람이 무심코
+ * 꽂는다.
+ */
+function finishedDelegationViewQuery(who: SQL, now: Date, limit: number) {
+  return delegationViewBase()
+    .where(and(who, finishedWhere(now))!)
+    .orderBy(
+      desc(webPortalApprovalDelegations.endsAt),
+      desc(webPortalApprovalDelegations.startsAt),
+    )
+    .limit(limit + 1);
 }
 
 /** 「내가 대신하고 있는 것」 — 🔴 **대리인으로 찾는다.** */
@@ -446,6 +535,32 @@ export function allUnfinishedDelegationsQuery(now: Date) {
   return delegationViewQuery(undefined, now);
 }
 
+/** 「내가 대신하고 있는 것」의 **끝난 줄** — 위 `delegationsActingForQuery` 와 같은 방향이다. */
+export function finishedDelegationsActingForQuery(
+  delegateEmployeeId: string,
+  now: Date,
+  limit: number = DELEGATION_FINISHED_LIMIT,
+) {
+  return finishedDelegationViewQuery(
+    eq(webPortalApprovalDelegations.delegateEmployeeId, delegateEmployeeId),
+    now,
+    limit,
+  );
+}
+
+/** 「내가 맡긴 것」의 **끝난 줄** — 위와 방향이 반대다. */
+export function finishedDelegationsGivenByQuery(
+  delegatorEmployeeId: string,
+  now: Date,
+  limit: number = DELEGATION_FINISHED_LIMIT,
+) {
+  return finishedDelegationViewQuery(
+    eq(webPortalApprovalDelegations.delegatorEmployeeId, delegatorEmployeeId),
+    now,
+    limit,
+  );
+}
+
 export async function loadDelegationsActingFor(
   delegateEmployeeId: string,
   now: Date = new Date(),
@@ -460,6 +575,48 @@ export async function loadDelegationsGivenBy(
   return delegationsGivenByQuery(delegatorEmployeeId, now);
 }
 
+/* ------------------------------------------------------------------ */
+/* 🔵 접어 두는 쪽 — 끝난 줄까지 함께 (2026-11-17, 설계 C-5)              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 🔴 **[휴가 설정 → 결재권 위임] 탭 전용이다.** 결재함 맨 위 안내는 **위 두 함수를
+ * 그대로** 쓴다 — 끝난 위임까지 늘 떠 있으면 그 안내를 아무도 안 읽게 된다.
+ *
+ * 🔴 **한 묶음이 두 질의다.** 한 질의로 섞어 읽고 TS 에서 가르면, 끝난 줄이 쌓여
+ * 상한을 채우는 날 **지금 걸려 있는 위임이 화면에서 사라진다**(재고관리에 실제로 그
+ * 모양이 있었다). 상한은 **접히는 쪽에만** 걸려야 한다.
+ *
+ * 🔴 **상한이 방향마다 따로 걸린다.** 「맡긴 것」과 「대신하고 있는 것」이 한 상한을
+ * 나눠 쓰면, 맡긴 끝난 줄이 50건인 사람에게 **대신하던 끝난 줄이 한 줄도 안 보이면서
+ * 잘렸다는 말도 안 나온다.** 그래서 방향마다 제 질의가 제 `limit + 1` 을 쓴다.
+ *
+ * 🔵 두 질의가 **같은 `now`** 를 본다. 각자 지금을 찍으면 그 사이에 끝나는 줄이
+ * 양쪽에서 빠지거나(영영 안 보인다) 양쪽에 들어간다(같은 줄이 두 번 보인다).
+ */
+export async function loadDelegationFoldActingFor(
+  delegateEmployeeId: string,
+  now: Date = new Date(),
+): Promise<DelegationFoldView<PortalDelegationView>> {
+  const [live, finishedPage] = await Promise.all([
+    delegationsActingForQuery(delegateEmployeeId, now),
+    finishedDelegationsActingForQuery(delegateEmployeeId, now),
+  ]);
+  return foldFinishedDelegations(live, finishedPage, DELEGATION_FINISHED_LIMIT);
+}
+
+/** 「내가 맡긴 것」 — 위와 방향만 반대다(까닭은 위 머리말 그대로). */
+export async function loadDelegationFoldGivenBy(
+  delegatorEmployeeId: string,
+  now: Date = new Date(),
+): Promise<DelegationFoldView<PortalDelegationView>> {
+  const [live, finishedPage] = await Promise.all([
+    delegationsGivenByQuery(delegatorEmployeeId, now),
+    finishedDelegationsGivenByQuery(delegatorEmployeeId, now),
+  ]);
+  return foldFinishedDelegations(live, finishedPage, DELEGATION_FINISHED_LIMIT);
+}
+
 /**
  * 관리자용 「모두의 결재권 위임」.
  *
@@ -470,8 +627,14 @@ export async function loadDelegationsGivenBy(
  * `listAllApprovalRouteDelegations`.)
  *
  * 🔵 줄 수에 상한을 두지 않았다. 여기 담기는 것은 **아직 안 끝난 위임**뿐이라
- * 사람 수를 넘지 않는다. 끝난 것까지 보는 화면(설계 C-5)을 만드는 날 상한을
- * 함께 가져와야 한다 — 그쪽은 해가 갈수록 쌓인다.
+ * 사람 수를 넘지 않는다.
+ *
+ * 🔴 **이 묶음은 여전히 끝난 줄을 못 본다**(2026-11-17 에 다시 재 본 결과다 —
+ * 빠뜨린 것이 아니다). 같은 날 제 위임 두 묶음에는 「끝난 위임 보기」 접기가
+ * 생겼지만(위 `loadDelegationFold*`), 관리자가 **남의 끝난 위임**을 보는 길은
+ * 그대로 없다 — 이번 조각의 범위 밖이었다. 🔴 그 화면을 만드는 날에는 상한을
+ * 함께 가져와야 한다(`DELEGATION_FINISHED_LIMIT`). 여기는 사람 수로 묶이지만
+ * 끝난 줄은 **회사 전체 것이 해가 갈수록 쌓인다** — 상한의 뜻이 다르다.
  */
 export async function loadAllUnfinishedDelegations(opts: {
   isAdmin: boolean;
