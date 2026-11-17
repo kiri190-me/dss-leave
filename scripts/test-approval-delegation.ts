@@ -34,6 +34,10 @@
  *   5. 🔴 **자기 신청은 자기가 결재 못 한다** — 위임으로도 못 넘는다.
  *   6. 🔴 묻던 길이 **빠짐없이** 걷혔고, 🔴 **받는 쪽이 쓰는 것은 남아 있다.**
  *
+ * 🔵 **보여 주는 쪽은 여기서 재지 않는다** — [휴가 설정 → 결재권 위임] 탭과 결재함
+ * 안내(2026-11-17, 조각 3c)는 scripts/test-delegation-screen.ts 가 잰다. 이 파일이
+ * 지키는 것은 **판정**이다.
+ *
  * 🔴 왜 전부 main() 안에 있나: 이 저장소의 검사는 tsx 가 CJS 로 돌려
  * (package.json 에 type:module 이 없다) 최상위 await 을 쓸 수 없다.
  * 🔴 **DB 를 건드리는 모듈은 `await import` 로 불러온다** — `src/lib/db` 는
@@ -372,6 +376,10 @@ async function main() {
   });
 
   check("🔴 **읽는 자리가 하나다** — 사람을 읽을 때 함께 읽는다", () => {
+    // 🔵 여기서 말하는 「읽는 자리」는 **판정이 쓰는 번호 목록**이다. 2026-11-17 에
+    //    화면이 쓰는 조회(이름·기간)가 같은 파일에 따로 생겼는데, 그쪽은 아직
+    //    **시작 전인 줄까지** 싣기 때문에 판정에 쓰면 안 된다 — 그 금은
+    //    scripts/test-delegation-screen.ts 가 잰다. 이 검사는 번호 목록만 본다.
     assert.ok(guards.includes("loadActingForEmployeeIds(employeeId)"), "사람을 읽을 때 안 읽는다");
     // 🔴 부르는 곳이 여럿이면 「메뉴는 있는데 배지가 0」처럼 어긋나도 아무 오류가
     //    안 나는 모양이 된다. 정의한 파일 말고는 **guards.ts 한 곳**이어야 한다.
@@ -434,9 +442,23 @@ async function main() {
     assert.ok(workflow.includes("const mine = isMyStep(step, {"));
   });
 
-  check("🔴 결재함 화면은 아무것도 더 하지 않는다 — 조회가 제 손으로 싣는다", () => {
+  check("🔴 결재함 화면이 **목록에는** 아무것도 더 하지 않는다 — 조회가 제 손으로 싣는다", () => {
+    // 🔵 **2026-11-17 에 뜻이 좁아졌다.** 그 전에는 「이 화면은 위임에 대해 아무
+    //    것도 안 한다」였는데, 그날 조각 3c 가 **읽기 전용 안내**를 맨 위에 더했다
+    //    (위임을 받으면 남의 건이 목록에 갑자기 나타나는데 까닭을 알 길이 없었다).
+    // 🔴 **그래도 금은 그대로다**: 화면은 「누가 결재할 수 있나」에 한 글자도
+    //    보태지 않는다. 목록은 인자 하나로 부르고, 위임 목록을 제 손으로 나르지
+    //    않는다 — 나르기 시작하면 「목록엔 뜨는데 눌러도 거절」이 되돌아온다.
     assert.ok(screen.includes("pendingForApprover(member)"));
-    assert.ok(!screen.includes("actingForEmployeeIds"), "화면이 목록을 따로 나른다");
+    assert.ok(!screen.includes("actingForEmployeeIds"), "화면이 판정 목록을 따로 나른다");
+    // 🔴 안내가 읽는 것은 **화면 전용 조회**(이름과 기간)이고, 그 값이 목록 조회로
+    //    흘러들지 않는다. 섞이면 판정이 화면에서 갈라져 나온다.
+    assert.ok(screen.includes("<DelegationNotice"), "안내가 사라졌다 — 조각 3c 가 되돌려졌나");
+    assert.ok(
+      !/pendingForApprover\(member,/.test(screen),
+      "🔴 목록 조회에 무언가를 더 넘긴다",
+    );
+    assert.ok(!screen.includes("isMyStep"), "🔴 화면이 제 손으로 판정한다");
   });
 
   /* ---------------------------------------------------------------- */

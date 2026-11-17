@@ -156,6 +156,37 @@ export function formatRange(start: string, end: string, withYear = false): strin
   return `${formatDay(start, withYear)} ~ ${formatDay(end, withYear && yearOf(start) !== yearOf(end))}`;
 }
 
+/**
+ * 한 **시각**(timestamptz)을 한국 시간으로 — "5월 3일 (월) 09:00".
+ *
+ * 🔴 이 파일의 다른 함수들과 다루는 것이 다르다. 나머지는 'YYYY-MM-DD' **글자**를
+ * 다루지만 이것은 DB 의 `timestamp with time zone` 에서 온 `Date` 를 받는다 —
+ * 결재권 위임의 기간처럼 **시·분까지** 뜻이 있는 값이 그 꼴이다.
+ *
+ * 🔴 `at.toLocaleString("ko-KR")` 을 시간대 없이 부르면 **NAS 컨테이너(UTC)에서
+ * 아홉 시간 어긋난다.** 개발 PC(KST)에서는 맞게 나오므로 눈으로는 영영 안
+ * 드러나고, 「09:00 부터인데 00:00 로 적혀 있다」로만 나타난다.
+ *
+ * 🔴 시각은 `hourCycle: "h23"` 이다. `hour12: false` 로 적으면 ICU 판에 따라
+ * 자정이 **24:00** 으로 나온다 — 같은 날 맨 앞을 「다음 날」처럼 읽게 만든다.
+ */
+const KST_TIME = new Intl.DateTimeFormat("en-GB", {
+  timeZone: TIMEZONE,
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+});
+
+export function formatKstTime(at: Date): string {
+  return KST_TIME.format(at);
+}
+
+export function formatKstDateTime(at: Date, withYear = false): string {
+  // todayKst 는 「그 시각의 한국 날짜」를 'YYYY-MM-DD' 로 준다 — 날짜 쪽 시간대
+  // 변환이 이미 한 곳에 있으므로 여기서 다시 세지 않는다.
+  return `${formatDay(todayKst(at), withYear)} ${formatKstTime(at)}`;
+}
+
 /** 2027-05 → 2027년 5월 */
 export function formatYm(ym: string): string {
   const [y, m] = ym.split("-").map(Number);

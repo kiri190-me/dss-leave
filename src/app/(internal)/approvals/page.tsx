@@ -1,9 +1,15 @@
 import { decideAction } from "@/app/actions/leave";
 import { ActionForm } from "@/components/ActionForm";
 import { KindBadge, StatusBadge, StepTrail, TypeChip } from "@/components/badges";
+import { DelegationNotice } from "@/components/DelegationNotice";
 import { DoneBanner } from "@/components/DoneBanner";
 import { requireMember } from "@/lib/auth/guards";
+import {
+  loadDelegationsActingFor,
+  loadDelegationsGivenBy,
+} from "@/lib/auth/portal-delegations";
 import { formatRange } from "@/lib/dates";
+import { env } from "@/lib/env";
 import {
   decidedBy,
   getBalance,
@@ -22,9 +28,14 @@ import { KIND_LABEL, formatDays } from "@/lib/leave/labels";
  * pendingForApprover · decidedBy) 결재할 것이 없는 사람에게는 빈 화면이 된다.
  *
  * 🔵 **결재권 위임으로 대신 누를 결재도 같은 목록에 뜬다**(설계 B-9). 그 목록을
- * 싣는 자리는 data.ts 의 `deciderOf` 한 곳이고, 이 화면은 아무것도 더 하지
- * 않는다 — 2026-11-16 저녁까지는 여기서 포털에 묻고 그 값을 조회에 넘겼는데,
- * 포털이 **써 주는** 방식으로 뒤집히면서(B-12) 그 왕복이 사라졌다.
+ * 싣는 자리는 data.ts 의 `deciderOf` 한 곳이고, 이 화면은 **목록에 대해서는**
+ * 아무것도 더 하지 않는다 — 2026-11-16 저녁까지는 여기서 포털에 묻고 그 값을
+ * 조회에 넘겼는데, 포털이 **써 주는** 방식으로 뒤집히면서(B-12) 그 왕복이 사라졌다.
+ *
+ * 🔴 **2026-11-17(조각 3c): 맨 위에 안내가 하나 붙었다.** 위임을 받으면 남의 건이
+ * 이 목록에 갑자기 나타나는데 **왜 거기 있는지 알 길이 없었다.** 그 안내는
+ * **읽기 전용**이고 목록 조회에는 한 글자도 섞이지 않는다 — 이름과 기간을 따로
+ * 읽을 뿐, 「누가 결재할 수 있나」는 여전히 `deciderOf` 한 곳이 정한다.
  */
 export default async function ApprovalsPage({
   searchParams,
@@ -33,11 +44,19 @@ export default async function ApprovalsPage({
 }) {
   const member = await requireMember();
   const sp = await searchParams;
-  const [items, history, holidays, rules] = await Promise.all([
+  // 🔵 안내가 볼 기준 시각. 🔴 목록 쪽 판정은 **사람을 읽을 때** 찍은 시각을 쓰므로
+  //    (auth/guards.ts 의 loadEmployee) 둘이 몇 밀리초 어긋날 수 있다. 위임이
+  //    시작·종료하는 바로 그 순간에만 「안내는 진행 중인데 목록은 아직」 같은 모양이
+  //    되고, 다음 새로고침이면 맞는다 — 시각을 한 곳에 캐 두면 **끝난 위임이 열린 채
+  //    남는** 더 비싼 결함이 생기므로 요청마다 새로 찍는 쪽을 그대로 둔다.
+  const now = new Date();
+  const [items, history, holidays, rules, actingFor, givenAway] = await Promise.all([
     pendingForApprover(member),
     decidedBy(member.employee.id),
     loadHolidaySet(),
     loadRules(),
+    loadDelegationsActingFor(member.employee.id, now),
+    loadDelegationsGivenBy(member.employee.id, now),
   ]);
 
   // 결재할 때 신청자의 남은 휴가를 함께 본다
@@ -58,6 +77,16 @@ export default async function ApprovalsPage({
       <section>
         <h1 className="mb-1 text-xl font-semibold text-slate-900">결재함</h1>
         <DoneBanner code={sp.done} className="mb-4" />
+        {/*
+          🔴 맡은 것도 맡긴 것도 없으면 **아무것도 그리지 않는다**(조각 스스로
+          null 을 돌려준다). 늘 떠 있는 안내는 아무도 읽지 않게 된다.
+        */}
+        <DelegationNotice
+          received={actingFor}
+          given={givenAway}
+          now={now}
+          approvalsUrl={env.approvalsBaseUrl}
+        />
         <p className="mb-4 text-sm text-slate-500">
           <b>지금 내 차례인</b> 신청입니다. 결재는 결재선을 따라 <b>한 명씩 차례로</b> 갑니다 — 내가 승인하면 다음
           사람에게 넘어가고, 마지막 사람이 승인하면 확정됩니다. 한 명이라도 반려하면 그 자리에서 끝나고 뒷사람에게는

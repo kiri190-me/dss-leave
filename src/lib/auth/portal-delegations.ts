@@ -14,9 +14,13 @@
  * 「없어지는 것들」). 설계 B-6·B-7(못 물었을 때의 처신과 안내)도 같은 까닭으로
  * 이 집에서는 더 읽을 것이 없다.
  *
- * ── 🔴 이 파일에 남은 둘은 **방향이 다르다** ──────────────────────────────
- *  · 아래 `loadActingForEmployeeIds` — **읽는 쪽.** 「지금 내가 대신 결재할 수
- *    있는 사람들」을 결재 판정에 올린다.
+ * ── 🔴 이 파일에 있는 셋은 **쓰임이 다르다** ──────────────────────────────
+ *  · 아래 `loadActingForEmployeeIds` — **판정이 읽는 쪽.** 「지금 내가 대신
+ *    결재할 수 있는 사람들」을 결재 판정에 올린다. 돌려주는 것은 **번호뿐**이다.
+ *  · 🔵 `loadDelegationsActingFor` · `loadDelegationsGivenBy` ·
+ *    `loadAllUnfinishedDelegations` — **화면이 읽는 쪽**(2026-11-17, 조각 3c).
+ *    사람에게 보여 줄 **이름과 기간**을 싣는다. 🔴 **판정에 쓰지 마라** —
+ *    아직 시작 전인 줄까지 싣기 때문이다(아래 그 절 머리말).
  *  · 🔴 `findEmployeeIdsBySubjects` — **받는 쪽**(조각 6)이 쓴다. 포털이 보낸
  *    `sub` 를 이 집 명단 번호로 바꾸는 자리이고, 부르는 곳은
  *    `app/api/integration/delegations/route.ts` 하나다. 🔴 **지우지 마라** —
@@ -33,10 +37,11 @@
  * 쪽은 **명단 번호 하나로** 묻고 답도 명단 번호로 나간다.
  * ============================================================================
  */
-import { and, eq, gt, inArray, isNull, lte, type SQL } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, lte, type SQL } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 
 import { db } from "@/lib/db";
-import { webPortalApprovalDelegations, webUsers } from "@/lib/db/schema";
+import { webEmployees, webPortalApprovalDelegations, webUsers } from "@/lib/db/schema";
 import type { DelegatedApproverRow } from "@/lib/leave/portal-delegation-sync";
 import { isValidSubject } from "./sso-role";
 
@@ -66,8 +71,31 @@ import { isValidSubject } from "./sso-role";
 export function liveDelegationWhere(delegateEmployeeId: string, now: Date): SQL {
   return and(
     eq(webPortalApprovalDelegations.delegateEmployeeId, delegateEmployeeId),
-    isNull(webPortalApprovalDelegations.revokedAt),
+    unfinishedWhere(now),
     lte(webPortalApprovalDelegations.startsAt, now),
+  )!;
+}
+
+/**
+ * 🔴 **「아직 안 끝난 줄」이지 「살아 있는 줄」이 아니다.** 거둔 표시가 없고 종료
+ * 시각 전이면 참이라 **아직 시작 전인 줄까지 들어온다.**
+ *
+ * 🔴 **판정에 쓰지 마라** — 이것만으로 결재 권한을 열면 **시작 시각 전에 미리
+ * 열린다.** 판정이 쓰는 것은 위 `liveDelegationWhere`(여기에 `starts_at <= 지금`
+ * 을 더한 것) 하나뿐이다.
+ *
+ * 🔵 **그럼 왜 가르나** — 화면은 더 넓게 보여야 한다. 통합 승인함에서 **내일부터**로
+ * 맡겨 놓고 곧바로 이 시스템을 열어 본 사람에게 「없습니다」만 보이면, 그것이
+ * **전파가 안 된 것인지 아직 시작 전인 것인지** 가릴 길이 없다(2026-11-17 에
+ * 사용자가 「위임되었다는 내용이 안 뜬다」고 한 바로 그 자리다). 그래서 화면은
+ * 시작 전 줄도 싣고 **「시작 전」이라고 적는다**(leave/delegation-view.ts).
+ *
+ * 🔴 **끝난 줄과 거둔 줄은 양쪽 다 안 보인다** — 「위임이 끝나면 안내도 사라진다」가
+ * 이 한 줄에 달려 있다. 끝난 위임을 보여 주는 화면은 설계 C-5 의 다음 조각이다.
+ */
+function unfinishedWhere(now: Date): SQL {
+  return and(
+    isNull(webPortalApprovalDelegations.revokedAt),
     gt(webPortalApprovalDelegations.endsAt, now),
   )!;
 }
@@ -120,6 +148,121 @@ export async function loadActingForEmployeeIds(
 ): Promise<string[]> {
   const rows = await actingForEmployeeIdsQuery(delegateEmployeeId, now);
   return rows.map((row) => row.delegatorEmployeeId);
+}
+
+/* ------------------------------------------------------------------ */
+/* 🔵 화면이 읽는 쪽 — 사람에게 보여 줄 **이름과 기간** (조각 3c)         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 화면 한 줄. 🔴 **판정에 쓰는 값이 아니다** — 아래 세 조회는 시작 전 줄까지
+ * 싣는다(`unfinishedWhere` 머리말).
+ *
+ * 🔵 **양쪽 이름을 늘 함께 싣는다.** 「받은 것」에 맡긴 사람 이름만, 「맡긴 것」에
+ * 대리인 이름만 싣는 꼴로 나누면 조회가 세 벌이 되고, 관리자가 보는 「모두의 것」은
+ * 어차피 둘 다 필요하다. 어느 이름을 그릴지는 **그리는 쪽**이 고른다
+ * (leave/delegation-view.ts 의 `delegationSentence`).
+ */
+export type PortalDelegationView = {
+  id: string;
+  /** 결재권을 맡긴 사람 이름 */
+  delegatorName: string;
+  /** 대신 결재하는 사람 이름 */
+  delegateName: string;
+  startsAt: Date;
+  endsAt: Date;
+  /** 맡긴 까닭. 없으면 빈 글자다(통로 규약) */
+  reason: string;
+};
+
+/**
+ * 🔴 **이름은 이 집 명단에서 읽는다 — 포털에 묻지 않는다.** 받는 통로가 저장할
+ * 때 이미 명단 번호로 바꿔 두었으므로(이 파일 머리말의 두 단) 이름은 조인 한 번에
+ * 따라온다. 포털에 물으면 화면 하나가 다시 망에 매이고, 그것을 걷어낸 것이 조각
+ * 8 이다(설계 B-12).
+ *
+ * 🔴 **한 표를 두 번 조인한다.** 맡긴 사람과 대리인이 둘 다 `web_employees` 라
+ * 별명 없이 쓰면 drizzle 이 같은 표를 한 번만 걸고 **두 이름이 같은 값**이 된다 —
+ * 오류 없이 「김○○님이 김○○님에게 맡겼습니다」가 그려진다.
+ *
+ * 🔵 질의를 **만들기만** 하는 함수를 따로 두는 것은 이 파일의 다른 자리와 같은
+ * 까닭이다 — 시험이 `.toSQL()` 로 구워 조건을 글자가 아니라 **구워진 SQL** 로 본다.
+ */
+function delegationViewQuery(who: SQL | undefined, now: Date) {
+  const delegator = alias(webEmployees, "delegator");
+  const delegate = alias(webEmployees, "delegate");
+  const unfinished = unfinishedWhere(now);
+  return db
+    .select({
+      id: webPortalApprovalDelegations.id,
+      delegatorName: delegator.name,
+      delegateName: delegate.name,
+      startsAt: webPortalApprovalDelegations.startsAt,
+      endsAt: webPortalApprovalDelegations.endsAt,
+      reason: webPortalApprovalDelegations.reason,
+    })
+    .from(webPortalApprovalDelegations)
+    .innerJoin(delegator, eq(delegator.id, webPortalApprovalDelegations.delegatorEmployeeId))
+    .innerJoin(delegate, eq(delegate.id, webPortalApprovalDelegations.delegateEmployeeId))
+    .where(who ? and(who, unfinished)! : unfinished)
+    // 먼저 시작한 것이 위다 — 진행 중인 줄이 시작 전 줄보다 앞에 선다.
+    .orderBy(asc(webPortalApprovalDelegations.startsAt));
+}
+
+/** 「내가 대신하고 있는 것」 — 🔴 **대리인으로 찾는다.** */
+export function delegationsActingForQuery(delegateEmployeeId: string, now: Date) {
+  return delegationViewQuery(
+    eq(webPortalApprovalDelegations.delegateEmployeeId, delegateEmployeeId),
+    now,
+  );
+}
+
+/** 「내가 맡긴 것」 — 🔴 **맡긴 사람으로 찾는다.** 위와 방향이 반대다. */
+export function delegationsGivenByQuery(delegatorEmployeeId: string, now: Date) {
+  return delegationViewQuery(
+    eq(webPortalApprovalDelegations.delegatorEmployeeId, delegatorEmployeeId),
+    now,
+  );
+}
+
+/** 「모두의 것」 — 사람 조건이 없다. 🔴 부르기 전에 권한을 묻는 자리는 아래다. */
+export function allUnfinishedDelegationsQuery(now: Date) {
+  return delegationViewQuery(undefined, now);
+}
+
+export async function loadDelegationsActingFor(
+  delegateEmployeeId: string,
+  now: Date = new Date(),
+): Promise<PortalDelegationView[]> {
+  return delegationsActingForQuery(delegateEmployeeId, now);
+}
+
+export async function loadDelegationsGivenBy(
+  delegatorEmployeeId: string,
+  now: Date = new Date(),
+): Promise<PortalDelegationView[]> {
+  return delegationsGivenByQuery(delegatorEmployeeId, now);
+}
+
+/**
+ * 관리자용 「모두의 결재권 위임」.
+ *
+ * 🔴 **권한이 없으면 `null` 이다 — DB 에 묻지도 않는다.** 화면에서 가리는 것이
+ * 아니라 **없는 것**이어야 한다: 서버 컴포넌트가 읽은 값은 그리지 않아도 HTML 에
+ * 실려 나가므로, 「관리자일 때만 그린다」만으로는 **한 줄도 못 막는다.**
+ * (A/S 의 같은 묶음이 같은 까닭으로 조회 함수 자신이 거절한다 —
+ * `listAllApprovalRouteDelegations`.)
+ *
+ * 🔵 줄 수에 상한을 두지 않았다. 여기 담기는 것은 **아직 안 끝난 위임**뿐이라
+ * 사람 수를 넘지 않는다. 끝난 것까지 보는 화면(설계 C-5)을 만드는 날 상한을
+ * 함께 가져와야 한다 — 그쪽은 해가 갈수록 쌓인다.
+ */
+export async function loadAllUnfinishedDelegations(opts: {
+  isAdmin: boolean;
+  now?: Date;
+}): Promise<PortalDelegationView[] | null> {
+  if (!opts.isAdmin) return null;
+  return allUnfinishedDelegationsQuery(opts.now ?? new Date());
 }
 
 /* ------------------------------------------------------------------ */
