@@ -496,6 +496,43 @@ export const webApprovalSteps = pgTable(
     index("web_approval_steps_pending_idx")
       .on(t.rankId)
       .where(sql`${t.isDeleted} = false and ${t.status} = 'PENDING'`),
+    /*
+     * ── 결재 **내역**: 기간·사람으로 가로지르는 길 (2026-11-17, 설계 C-4) ──
+     *
+     * 🔴 위의 둘은 **「지금 차례」전용**이다 — 부분 조건이 `status = 'PENDING'`
+     * 이라 결재가 끝나는 순간 그 줄은 두 색인 어디에도 남지 않는다. 그래서
+     * 「내가 2월에 한 결재」를 묻는 길은 2026-11-17 까지 **하나도 없었다**
+     * (`decided_at` 에도 「누가 눌렀나」에도 색인이 0 이었다 — 세 집이 똑같았다).
+     *
+     * 🔴 **왜 둘인가 — 「OR 두 칸」은 한 색인으로 못 탄다.** 내역 조회의 조건은
+     * `decided_by_employee_id = 나 OR approver_employee_id = 나` 다. 복합 색인
+     * `(decided_by, approver)` 하나로는 둘째 칸만 아는 질의를 탈 수 없고(앞
+     * 칸이 비면 색인이 안 열린다), 두 칸을 한 줄에 합친 식 색인은 **등호 두 쪽을
+     * 모두 그 식으로 적어야** 해서 질의가 읽기 어려워진다. 색인을 **둘로 나눠
+     * 두면** 계획기가 각각을 비트맵으로 훑어 OR 로 합친다(BitmapOr) — 이쪽이
+     * PostgreSQL 이 OR 를 푸는 본래 길이다.
+     *
+     * 🔴 **부분 조건이 조회와 글자까지 같아야 한다**(`is_deleted = false and
+     * status in ('APPROVED','REJECTED')`). 계획기는 「이 질의가 이 색인 안에
+     * 담기는가」를 **상수끼리** 견주어 증명하므로, 한쪽만 바꾸면 증명이 깨져
+     * 색인을 안 탄다 — 🔴 **결과는 그대로라 아무도 모르고 느려지기만 한다.**
+     * 조회 쪽(leave/data.ts 의 `approvalHistoryWhere`)이 이 두 조건을 바인딩
+     * 자리가 아닌 **글자**로 적는 까닭도 같다. scripts/test-approval-history.ts
+     * 가 둘을 맞대어 본다.
+     *
+     * 🔵 `decided_at` 을 **둘째 칸**에 둔 것은 사람으로 좁힌 뒤 기간으로 자르고
+     * 최근 순(`decided_at desc`)으로 읽기 때문이다. btree 는 거꾸로도 훑으므로
+     * 내림차순 색인을 따로 둘 이유가 없다.
+     *
+     * 🔵 건너뛴 단계(`SKIPPED`)는 부분 조건에서 빠진다 — 결재 내역은 승인·반려만
+     * 이다(설계 B-18). 까닭은 조회 쪽 머리말에 적었다.
+     */
+    index("web_approval_steps_decided_by_idx")
+      .on(t.decidedByEmployeeId, t.decidedAt)
+      .where(sql`${t.isDeleted} = false and ${t.status} in ('APPROVED', 'REJECTED')`),
+    index("web_approval_steps_decided_approver_idx")
+      .on(t.approverEmployeeId, t.decidedAt)
+      .where(sql`${t.isDeleted} = false and ${t.status} in ('APPROVED', 'REJECTED')`),
   ],
 );
 

@@ -1,7 +1,7 @@
 /**
  * 휴가 데이터 읽기. 계산 규칙은 rules.ts, 쓰기(신청·결재)는 workflow.ts 에 있다.
  */
-import { and, asc, desc, eq, gte, inArray, isNull, lte, ne, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, ne, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 
 import type { EmployeeWithRank, Viewer } from "@/lib/auth/guards";
@@ -29,6 +29,10 @@ import {
 //    포털에 알리는 판단이 제 계약으로 들고 있는 모양이고, 아래 조회가 그
 //    모양으로 돌려준다. 두 벌로 적지 않으려는 것이다.
 import type { ApprovalNudgeCandidate } from "./approval-nudge";
+// 🔴 **가르기는 DB 를 모르는 파일에 있다**(approval-history.ts) — 「내가 눌렀나
+//    남이 눌렀나」는 값만 보면 답이 나오는 판단이라, DB 없이 그대로 돌려 볼 수
+//    있는 자리에 두었다. 여기서는 조회가 읽어 온 두 칸을 그 함수에 넘기기만 한다.
+import { approvalHistoryRole, type ApprovalHistoryRole } from "./approval-history";
 import { myStepCondition, type Decider } from "./approval-scope";
 import { approvalTurnLabel } from "./labels";
 import {
@@ -809,7 +813,26 @@ export async function hasPendingApprovalFor(me: Decider, requestId: string): Pro
   return row !== undefined;
 }
 
-/** 내가 처리한 결재 (최근 순) */
+/**
+ * 내가 처리한 결재 (최근 순) — **결재함 화면의 아래쪽 표**가 쓴다.
+ *
+ * 🔴 **아래 `approvalHistoryFor` 와 일부러 나란히 둔 것이다**(2026-11-17).
+ * 넓히지 않고 둘로 둔 까닭:
+ *  · **뜻이 다르다.** 여기는 「**내가 누른** 결재」 하나뿐이고, 아래는 「**내
+ *    자리에서 일어난** 결재」까지 가로지른다. 여기에 `approver_employee_id = 나`
+ *    를 보태면 결재함의 「내가 처리한 결재」 표에 **남이 대신 누른 줄**이 섞여
+ *    제목이 거짓말을 한다 — 제목을 고치는 것은 화면 일이고, 🔵 **이 조각은
+ *    화면을 만들지도 고치지도 않는다**(화면은 통합 승인함 한 곳, 2026-11-17 사용자).
+ *  · **묻는 모양이 다르다.** 여기는 기간이 없고 최근 30건으로 끊는다. 아래는
+ *    기간이 **필수**다(사용자가 물은 것이 「특정 날짜 혹은 기간」이다).
+ *
+ * 🔴 **여기에 상태 조건이 없는데도 건너뛴 단계가 안 섞이는 것은 우연이 아니다** —
+ * `skipStep` 은 `decided_by_user_id`(계정)만 적고 `decided_by_employee_id`(명단)는
+ * 비워 두므로, 명단 번호로 묻는 이 조건에 **건너뛴 줄이 애초에 걸리지 않는다.**
+ * 🔴 누가 `skipStep` 에 명단 번호를 적는 날 이 표에 `SKIPPED` 줄이 조용히 들어오고,
+ * 화면은 그것을 **「반려」로 그린다**(approvals/page.tsx 가 `APPROVED` 가 아니면
+ * 반려로 적는다). 그래서 아래 조회는 같은 것을 **상태로** 못 박는다.
+ */
 export async function decidedBy(employeeId: string, limit = 30) {
   const applicant = alias(webEmployees, "applicant");
   return db
@@ -829,6 +852,220 @@ export async function decidedBy(employeeId: string, limit = 30) {
     )
     .orderBy(desc(webApprovalSteps.decidedAt))
     .limit(limit);
+}
+
+/* ------------------------------------------------------------------ */
+/* 결재 **내역** — 기간·사람으로 가로지른다 (2026-11-17, 설계 C-4)       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 「언제부터 언제까지」. 🔴 **반열린 구간이다** — `from <= decided_at < to`.
+ *
+ * 끝을 `<=` 로 적으면 **구간을 이어 붙일 때 경계의 한 순간이 양쪽에 두 번**
+ * 들어간다. 이 집에서 그 이어 붙임이 실제로 일어나는 자리가 있다: 설계 C-5 는
+ * 끝난 위임의 기간(`[starts_at, ends_at)`)을 그대로 이 조회에 넘겨 「그 위임
+ * 기간에 내가 대신한 결재」를 보여 준다 — 위임 기간이 **이미 반열린 구간**이라
+ * (auth/portal-delegations.ts 의 `liveDelegationWhere`) 여기서도 같은 모양이어야
+ * 두 칸이 어긋나지 않는다.
+ *
+ * 🔴 **그래서 「11월 1일 ~ 11월 30일」을 묻는 쪽은 `to` 에 12월 1일 0시를 준다.**
+ * 사람이 고른 날짜를 시각으로 바꾸는 일은 부르는 쪽(다음 조각의 통로)의 몫이다 —
+ * 이 조회는 시각만 안다. `decided_at` 은 timestamptz 라 한국 시간으로 자르려면
+ * 그쪽이 KST 기준 경계를 만들어 넘겨야 한다.
+ */
+export type ApprovalHistoryRange = {
+  from: Date;
+  /** 🔴 이 시각은 **안 들어간다**(위 머리말). */
+  to: Date;
+  /**
+   * 울타리. 🔴 **쪽 나누기가 아니다** — 넘치면 **조용히 잘린다.** 「더 있나」를
+   * 알아야 하면 부르는 쪽이 보고 싶은 수 **+1** 을 달라고 해서 줄 수로 가른다.
+   * 기본값은 아래 `APPROVAL_HISTORY_MAX_ROWS`.
+   */
+  limit?: number;
+};
+
+/**
+ * 한 번에 돌려주는 줄 수의 상한.
+ *
+ * 🔵 「아직 안 끝난 위임」을 읽는 조회에는 상한을 안 두었다 — 거기 담기는 줄은
+ * 사람 수를 넘지 못한다. 결재 내역은 반대다: **해가 갈수록 쌓이고** 기간을 넓게
+ * 잡는 것을 막을 길이 없다(auth/portal-delegations.ts 의
+ * `loadAllUnfinishedDelegations` 가 「끝난 것까지 보는 화면을 만드는 날 상한을
+ * 함께 가져와야 한다」고 적어 둔 그 자리다). 한 사람이 1년에 처리하는 결재가
+ * 수백 줄이라 500 이면 한 해를 통째로 물어도 남는다.
+ */
+export const APPROVAL_HISTORY_MAX_ROWS = 500;
+
+/** 결재 내역 한 줄. 🔴 사유(reason)를 싣지 않는다 — 아래 조회 머리말 참조. */
+export type ApprovalHistoryRow = {
+  stepId: string;
+  requestId: string;
+  stepNo: number;
+  /** 🔴 `APPROVED` · `REJECTED` 둘뿐이다 — 조회가 그 둘로 좁힌다 */
+  status: ApprovalStep["status"];
+  /** 🔴 늘 값이 있다 — 기간 조건이 빈 줄을 통과시키지 않는다 */
+  decidedAt: Date;
+  /** 승인·반려 의견. 없으면 null */
+  comment: string | null;
+  /** 🔴 이 줄이 **나에게** 무엇이었나 — 셋이 갈린다(approval-history.ts) */
+  role: ApprovalHistoryRole;
+  /** 그 단계의 주인 이름. 옛 직급 단계만 null */
+  approverName: string | null;
+  /** 실제로 누른 사람 이름 */
+  decidedByName: string | null;
+  /** 누구의 무슨 휴가인가 */
+  applicantName: string;
+  kind: LeaveRequest["kind"];
+  leaveType: LeaveRequest["leaveType"];
+  startDate: string;
+  endDate: string;
+  days: number;
+  /** 그 **신청**이 지금 어떻게 됐나. 내 단계는 승인했는데 뒤에서 반려될 수 있다 */
+  requestStatus: LeaveRequest["status"];
+};
+
+/**
+ * 🔴 **고르는 조건 — 이 집에만 있는 함정이 여기 다 들어 있다.**
+ *
+ * ① **주인과 누른 사람을 OR 로 묶는다.** 「내가 한 결재」만 보면 **내가 자리를
+ *    비운 동안 남이 대신 누른 결재**가 안 보이고, 그것이 사용자가 물은 둘째
+ *    줄이다. 가르는 일은 읽어 온 뒤 `approvalHistoryRole` 이 한다.
+ *
+ * ② 🔴 **`SKIPPED` 를 뺀다. 이것이 이 집의 핵심이다.** 건너뛴 단계는
+ *    `decided_by_employee_id` 가 **비어 있다** — 관리자 건너뛰기(`skipStep`)는
+ *    계정 번호(`decided_by_user_id`)만 적고 명단 번호는 안 적는다. 안 거르면
+ *    주인은 나인데 누른 사람이 비어 있는 줄이 전부 **「내 자리를 남이 눌렀다」로
+ *    오판된다** — 아무 오류도 안 나고, 건너뛴 수만큼 없던 대리 결재가 생긴다.
+ *    🔵 사용자가 **「건너뛰기는 내역에서 뺀다」**를 골랐다(설계 B-18): 건너뛰기는
+ *    결재가 아니라 그 관문을 지운 것이다.
+ *
+ *    🔴 **건너뛰기에 두 갈래가 있다는 것도 알아 둘 것.** 관리자가 명시적으로
+ *    건너뛴 것(`skipStep`)은 「누가·언제·왜」가 남지만, **반려·신청 취소로 인한
+ *    연쇄 건너뜀**(`skipOpenSteps`)은 상태만 바꾸고 **아무것도 안 남긴다**
+ *    (`decided_at` 조차 null 이다). 같은 `SKIPPED` 인데 기록 농도가 다르다 —
+ *    🔴 나중에 「건너뛰기도 보여 주자」가 나오면 **한 갈래는 통째로 빈칸**이 된다.
+ *    지금은 둘 다 빠지므로 문제가 안 된다.
+ *
+ * ③ **`WAITING`·`PENDING` 도 같은 조건에 함께 빠진다.** 아직 안 끝난 단계는
+ *    내역이 아니다. 🔵 기간 조건만으로도 빠지지만(`decided_at` 이 null 이라 어떤
+ *    비교도 참이 안 된다) **그것에 기대지 않는다** — 기간을 선택으로 바꾸는 날
+ *    조용히 섞여 들어온다.
+ *
+ * ④ 🔴 **상태 목록과 `is_deleted` 를 바인딩 자리가 아니라 글자로 적는다.**
+ *    부분 색인(`web_approval_steps_decided_by_idx` ·
+ *    `…_decided_approver_idx`)의 조건과 **상수끼리** 견주어야 계획기가 「이 질의는
+ *    저 색인 안에 담긴다」를 증명한다. `$1` 로 나가면 준비된 질의를 되쓸 때 값을
+ *    모른 채 계획을 세우므로 증명이 깨지고 색인을 안 탄다 — 🔴 **결과는 똑같아서
+ *    아무도 모르고 느려지기만 한다.** schema.ts 의 그 색인 주석과 짝이다.
+ *    🔵 사람 번호와 기간은 그대로 바인딩한다(값이 매번 다르고, 색인은 **조건**만
+ *    증명하면 된다).
+ */
+function approvalHistoryWhere(employeeId: string, range: ApprovalHistoryRange): SQL {
+  return and(
+    or(
+      eq(webApprovalSteps.decidedByEmployeeId, employeeId),
+      eq(webApprovalSteps.approverEmployeeId, employeeId),
+    ),
+    gte(webApprovalSteps.decidedAt, range.from),
+    lt(webApprovalSteps.decidedAt, range.to),
+    // 🔴 이 두 줄의 **차례까지** 색인의 부분 조건과 맞춰 둔다. 계획기는 차례를
+    //    따지지 않지만, 글자가 똑같으면 시험이 둘을 **그대로 맞대어** 볼 수
+    //    있다(scripts/test-approval-history.ts). 어긋나는 날을 글자로 잡는 것이
+    //    「조용히 느려지기만 한다」를 막는 유일한 길이다.
+    sql`${webApprovalSteps.isDeleted} = false`,
+    sql`${webApprovalSteps.status} in ('APPROVED', 'REJECTED')`,
+  )!;
+}
+
+/**
+ * 「이 사람이 이 기간에 한 / 대신한 / 대신 받은 결재」를 고르는 질의.
+ *
+ * 🔴 **질의를 만들기만 하고 돌리지 않는다.** 시험이 이것을 `.toSQL()` 로 **실제로
+ * 구워** 상태 거르기와 기간 경계를 글자가 아니라 **구워진 SQL** 로 본다
+ * (auth/portal-delegations.ts 가 같은 까닭으로 같은 모양이다). drizzle 의 질의는
+ * `await` 할 때 비로소 DB 에 붙으므로 만들어 두기만 하는 것은 아무 데도 안 닿는다.
+ * 🔵 개발 DB 에 결재 기록이 사실상 없어(단계 1행, 그것도 미결) **값으로 잴 수가
+ * 없다** — 이 집이 자료 없이 재는 수법을 쓰는 까닭이다.
+ *
+ * 🔴 **이름은 조인으로 읽고, 지워진 직원도 걸러 내지 않는다.** 소프트 삭제라 행이
+ * 남아 이름이 그대로 풀린다 — `stepsFor` 가 하는 그대로다. 내역에서 사람 이름이
+ * 비면 그게 더 큰 결함이고, 그만둔 사람이 과거에 한 결재는 지워지는 것이 아니다.
+ * 🔴 **한 표를 세 번 조인한다**(신청자·주인·누른 사람이 전부 `web_employees`).
+ * 별명 없이 쓰면 drizzle 이 같은 표를 한 번만 걸어 **세 이름이 같은 값**이 된다.
+ *
+ * 🔴 **사유(reason)를 읽지 않는다.** 이 줄은 포털을 거쳐 **다른 시스템의 화면**에
+ * 그려진다(portal-notifications.ts · portal-approvals.ts 의 같은 규칙). 휴가 사유는
+ * 본인과 결재권 직급에게만 보이는 값이다(`canSeeReason`).
+ *
+ * 🔵 **신청 행의 `is_deleted` 는 보지 않는다** — 이 시스템에는 신청을 지우는 길이
+ * 아예 없다(2026-11-17 실측: `softDeleteBy` 를 쓰는 여섯 자리에 신청 표가 없다).
+ * 있지도 않은 조건을 걸면 색인 증명만 복잡해진다. `decidedBy` 도 같다.
+ */
+export function approvalHistoryQuery(employeeId: string, range: ApprovalHistoryRange) {
+  const applicant = alias(webEmployees, "applicant");
+  const approver = alias(webEmployees, "approver");
+  const decider = alias(webEmployees, "decider");
+  return db
+    .select({
+      stepId: webApprovalSteps.id,
+      requestId: webApprovalSteps.requestId,
+      stepNo: webApprovalSteps.stepNo,
+      status: webApprovalSteps.status,
+      decidedAt: webApprovalSteps.decidedAt,
+      comment: webApprovalSteps.comment,
+      // 🔴 가르기에 쓰는 두 칸. 이름이 아니라 **번호**로 견준다 — 동명이인이
+      //    있으면 이름 비교는 조용히 틀린다.
+      approverEmployeeId: webApprovalSteps.approverEmployeeId,
+      decidedByEmployeeId: webApprovalSteps.decidedByEmployeeId,
+      approverName: approver.name,
+      decidedByName: decider.name,
+      applicantName: applicant.name,
+      kind: webLeaveRequests.kind,
+      leaveType: webLeaveRequests.leaveType,
+      startDate: webLeaveRequests.startDate,
+      endDate: webLeaveRequests.endDate,
+      days: webLeaveRequests.days,
+      requestStatus: webLeaveRequests.status,
+    })
+    .from(webApprovalSteps)
+    .innerJoin(webLeaveRequests, eq(webLeaveRequests.id, webApprovalSteps.requestId))
+    .innerJoin(applicant, eq(applicant.id, webLeaveRequests.employeeId))
+    .leftJoin(approver, eq(approver.id, webApprovalSteps.approverEmployeeId))
+    .leftJoin(decider, eq(decider.id, webApprovalSteps.decidedByEmployeeId))
+    .where(approvalHistoryWhere(employeeId, range))
+    // 최근 순. 🔵 단계 번호를 뒤에 붙이는 것은 **차례를 못 박기 위해서**다 —
+    // 같은 시각에 닫힌 줄이 둘이면(되살린 자료·한 거래 안의 여러 줄) 차례가
+    // 실행마다 달라져, 상한에 걸릴 때 보이는 줄이 흔들린다.
+    .orderBy(desc(webApprovalSteps.decidedAt), asc(webApprovalSteps.id))
+    .limit(range.limit ?? APPROVAL_HISTORY_MAX_ROWS);
+}
+
+/**
+ * 🔴 **이 조각의 입구.** 위 질의를 돌리고, 줄마다 **나에게 무엇이었나**를 붙인다.
+ *
+ * @param employeeId 보는 사람의 **명단 번호**(`web_employees.id`). 🔴 계정
+ *                   번호(`web_users.id`)도 포털 번호도 아니다 — 넣으면 오류 없이
+ *                   영원히 빈 목록이 나온다(결재 권한의 열쇠가 명단 번호라서다).
+ */
+export async function approvalHistoryFor(
+  employeeId: string,
+  range: ApprovalHistoryRange,
+): Promise<ApprovalHistoryRow[]> {
+  const rows = await approvalHistoryQuery(employeeId, range);
+  return rows.map(({ approverEmployeeId, decidedByEmployeeId, decidedAt, ...rest }) => {
+    if (decidedAt === null) {
+      // 🔴 여기 올 수 없다 — 기간 조건이 null 을 통과시키지 않는다. 그래도 `!` 로
+      //    타입만 눌러 끄지 않는 것은, 누가 기간을 선택으로 바꾸는 날 이 자리가
+      //    **조용히 거짓말을 시작**하기 때문이다(시각 없는 줄이 내역에 선다).
+      throw new Error("결재 내역에 결재 시각이 없는 줄이 섞였다 — 기간 조건이 빠졌다");
+    }
+    return {
+      ...rest,
+      decidedAt,
+      role: approvalHistoryRole({ approverEmployeeId, decidedByEmployeeId }, employeeId),
+    };
+  });
 }
 
 /** 관리자 화면: 직원별 신청 (사유 없이) */

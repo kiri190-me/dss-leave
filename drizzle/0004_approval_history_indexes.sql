@@ -1,0 +1,2 @@
+CREATE INDEX "web_approval_steps_decided_by_idx" ON "web_approval_steps" USING btree ("decided_by_employee_id","decided_at") WHERE "web_approval_steps"."is_deleted" = false and "web_approval_steps"."status" in ('APPROVED', 'REJECTED');--> statement-breakpoint
+CREATE INDEX "web_approval_steps_decided_approver_idx" ON "web_approval_steps" USING btree ("approver_employee_id","decided_at") WHERE "web_approval_steps"."is_deleted" = false and "web_approval_steps"."status" in ('APPROVED', 'REJECTED');
